@@ -252,7 +252,7 @@ public class PaperConfig {
         velocityOnlineMode = getBoolean("settings.velocity-support.online-mode", false);
         String secret = getString("settings.velocity-support.secret", "");
         if (velocitySupport && secret.isEmpty()) {
-            fatal("Velocity support is enabled, but no secret key was specified. A secret key is required!");
+            logError("Velocity support is enabled, but no secret key was specified. A secret key is required!");
         } else {
             velocitySecretKey = secret.getBytes(StandardCharsets.UTF_8);
         }
