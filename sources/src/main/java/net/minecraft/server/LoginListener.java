@@ -197,13 +197,11 @@ public class LoginListener implements PacketLoginInListener, ITickable {
             this.g = LoginListener.EnumProtocolState.KEY;
             this.networkManager.sendPacket(new PacketLoginOutEncryptionBegin("", this.server.O().getPublic(), this.e));
         } else {
-			// Paper start - Velocity support
+            // Paper start - Velocity support
             if (com.destroystokyo.paper.PaperConfig.velocitySupport) {
                 this.velocityLoginMessageId = java.util.concurrent.ThreadLocalRandom.current().nextInt();
-                net.minecraft.network.FriendlyByteBuf buf = new net.minecraft.network.FriendlyByteBuf(io.netty.buffer.Unpooled.buffer());
-                buf.writeByte(com.destroystokyo.paper.proxy.VelocityProxy.MAX_SUPPORTED_FORWARDING_VERSION);
-                net.minecraft.network.protocol.login.ClientboundCustomQueryPacket packet1 = new net.minecraft.network.protocol.login.ClientboundCustomQueryPacket(this.velocityLoginMessageId, com.destroystokyo.paper.proxy.VelocityProxy.PLAYER_INFO_CHANNEL, buf);
-                this.connection.send(packet1);
+                PacketLoginOutCustomPayload packet = new PacketLoginOutCustomPayload(this.velocityLoginMessageId, com.destroystokyo.paper.proxy.VelocityProxy.PLAYER_INFO_CHANNEL, new PacketDataSerializer(io.netty.buffer.Unpooled.EMPTY_BUFFER));
+                this.networkManager.sendPacket(packet);
                 return;
             }
             // Paper end
@@ -298,8 +296,8 @@ public class LoginListener implements PacketLoginInListener, ITickable {
     public class LoginHandler {
 
         public void fireEvents() throws Exception {
-			                // Paper start - Velocity support
-                            if (ServerLoginPacketListenerImpl.this.velocityLoginMessageId == -1 && com.destroystokyo.paper.PaperConfig.velocitySupport) {
+                            // Paper start - Velocity support
+                            if (LoginListener.this.velocityLoginMessageId == -1 && com.destroystokyo.paper.PaperConfig.velocitySupport) {
                                 disconnect("This server requires you to connect with Velocity.");
                                 return;
                             }
@@ -352,9 +350,9 @@ public class LoginListener implements PacketLoginInListener, ITickable {
 	
 	@Override
     public void a(PacketLoginInCustomPayload packetloginincustompayload) {
-		// Paper start - Velocity support
-        if (com.destroystokyo.paper.PaperConfig.velocitySupport && packet.getTransactionId() == this.velocityLoginMessageId) {
-            net.minecraft.network.FriendlyByteBuf buf = packet.getData();
+        // Paper start - Velocity support
+        if (com.destroystokyo.paper.PaperConfig.velocitySupport && packetloginincustompayload.getId() == this.velocityLoginMessageId) {
+            PacketDataSerializer buf = packetloginincustompayload.getBuf();
             if (buf == null) {
                 this.disconnect("This server requires you to connect with Velocity.");
                 return;
@@ -365,33 +363,9 @@ public class LoginListener implements PacketLoginInListener, ITickable {
                 return;
             }
 
-            int version = buf.readVarInt();
-            if (version > com.destroystokyo.paper.proxy.VelocityProxy.MAX_SUPPORTED_FORWARDING_VERSION) {
-                throw new IllegalStateException("Unsupported forwarding version " + version + ", wanted upto " + com.destroystokyo.paper.proxy.VelocityProxy.MAX_SUPPORTED_FORWARDING_VERSION);
-            }
+            this.networkManager.l = new java.net.InetSocketAddress(com.destroystokyo.paper.proxy.VelocityProxy.readAddress(buf), ((java.net.InetSocketAddress) this.networkManager.getSocketAddress()).getPort());
 
-            java.net.SocketAddress listening = this.connection.getRemoteAddress();
-            int port = 0;
-            if (listening instanceof java.net.InetSocketAddress) {
-                port = ((java.net.InetSocketAddress) listening).getPort();
-            }
-            this.connection.address = new java.net.InetSocketAddress(com.destroystokyo.paper.proxy.VelocityProxy.readAddress(buf), port);
-
-            this.gameProfile = com.destroystokyo.paper.proxy.VelocityProxy.createProfile(buf);
-
-            // We should already have this, but, we'll read it out anyway
-            //noinspection NonStrictComparisonCanBeEquality
-            if (version >= com.destroystokyo.paper.proxy.VelocityProxy.MODERN_FORWARDING_WITH_KEY) {
-                final ProfilePublicKey.Data forwardedKey = com.destroystokyo.paper.proxy.VelocityProxy.readForwardedKey(buf);
-                if (this.profilePublicKeyData == null) {
-                    try {
-                        ProfilePublicKey.createValidated(this.server.getServiceSignatureValidator(), this.gameProfile.getId(), forwardedKey);
-                        this.profilePublicKeyData = forwardedKey;
-                    } catch (CryptException e) {
-                        this.disconnect("Unable to validate forwarded player key");
-                    }
-                }
-            }
+            this.setGameProfile(com.destroystokyo.paper.proxy.VelocityProxy.createProfile(buf));
 
             // Proceed with login
             authenticatorPool.execute(() -> {
@@ -399,7 +373,7 @@ public class LoginListener implements PacketLoginInListener, ITickable {
                     new LoginHandler().fireEvents();
                 } catch (Exception ex) {
                     disconnect("Failed to verify username!");
-                    server.server.getLogger().log(java.util.logging.Level.WARNING, "Exception verifying " + gameProfile.getName(), ex);
+                    server.server.getLogger().log(java.util.logging.Level.WARNING, "Exception verifying " + i.getName(), ex);
                 }
             });
             return;

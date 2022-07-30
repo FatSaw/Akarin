@@ -145,6 +145,7 @@ public enum EnumProtocol {
         this.a(EnumProtocolDirection.CLIENTBOUND, PacketLoginOutSetCompression.class);
         this.a(EnumProtocolDirection.SERVERBOUND, PacketLoginInStart.class);
         this.a(EnumProtocolDirection.SERVERBOUND, PacketLoginInEncryptionBegin.class);
+        this.a(EnumProtocolDirection.CLIENTBOUND, PacketLoginOutCustomPayload.class);
 		this.a(EnumProtocolDirection.SERVERBOUND, PacketLoginInCustomPayload.class);
     }
 };

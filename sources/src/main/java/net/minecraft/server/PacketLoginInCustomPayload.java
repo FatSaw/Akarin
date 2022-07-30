@@ -5,7 +5,9 @@ import java.io.IOException;
 public class PacketLoginInCustomPayload implements Packet<PacketLoginInListener> {
 
     private int a;
+	public int getId() { return a; } // Paper - OBFHELPER
     private PacketDataSerializer b;
+	public PacketDataSerializer getBuf() { return b; } // Paper - OBFHELPER
 
     public PacketLoginInCustomPayload() {}
 

@@ -8,6 +8,7 @@ import java.io.IOException;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
+import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -191,7 +192,7 @@ public class PaperConfig {
         boolean timings = getBoolean("timings.enabled", true);
         boolean verboseTimings = getBoolean("timings.verbose", true);
         TimingsManager.privacy = getBoolean("timings.server-name-privacy", false);
-        TimingsManager.hiddenConfigs = getList("timings.hidden-config-entries", Lists.newArrayList("database", "settings.bungeecord-addresses", "settings.proxies.velocity.secret"));
+        TimingsManager.hiddenConfigs = getList("timings.hidden-config-entries", Lists.newArrayList("database", "settings.bungeecord-addresses", "settings.velocity-support.secret"));
         int timingHistoryInterval = getInt("timings.history-interval", 300);
         int timingHistoryLength = getInt("timings.history-length", 3600);
 
@@ -243,19 +244,18 @@ public class PaperConfig {
         bungeeOnlineMode = getBoolean("settings.bungee-online-mode", true);
     }
 	
-	public static boolean velocitySupport = false;
-	private static void velocitySupport() {
-        velocitySupport = getBoolean("settings.proxies.velocity.support", false);
-    }
-	
-	public static boolean velocityOnlineMode = false;
-	private static void velocityOnlineMode() {
-        velocityOnlineMode = getBoolean("settings.proxies.velocity.online-mode", false);
-    }
-	
-	public static String velocitySecret = "";
-	private static void velocitySecret() {
-        velocitySecret = getString("settings.proxies.velocity.secret", "");
+    public static boolean velocitySupport;
+    public static boolean velocityOnlineMode;
+    public static byte[] velocitySecretKey;
+    private static void velocitySupport() {
+        velocitySupport = getBoolean("settings.velocity-support.enabled", false);
+        velocityOnlineMode = getBoolean("settings.velocity-support.online-mode", false);
+        String secret = getString("settings.velocity-support.secret", "");
+        if (velocitySupport && secret.isEmpty()) {
+            fatal("Velocity support is enabled, but no secret key was specified. A secret key is required!");
+        } else {
+            velocitySecretKey = secret.getBytes(StandardCharsets.UTF_8);
+        }
     }
     
     public static int packetInSpamThreshold = 300;
