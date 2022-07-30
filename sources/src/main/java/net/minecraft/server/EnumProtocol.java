@@ -161,7 +161,7 @@ public enum EnumProtocol {
     }
 
     protected EnumProtocol a(EnumProtocolDirection enumprotocoldirection, Class<? extends Packet<?>> oclass) {
-        BiMap<Integer, Class<? extends Packet<?>>>> object = (BiMap) this.h.get(enumprotocoldirection);
+        BiMap<Integer, Class<? extends Packet<?>>> object = this.h.get(enumprotocoldirection);
 
         if (object == null) {
             object = HashBiMap.create();
