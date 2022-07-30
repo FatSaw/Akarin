@@ -161,20 +161,20 @@ public enum EnumProtocol {
     }
 
     protected EnumProtocol a(EnumProtocolDirection enumprotocoldirection, Class<? extends Packet<?>> oclass) {
-        Object object = (BiMap) this.h.get(enumprotocoldirection);
+        BiMap<Integer, Class<? extends Packet<?>>>> object = (BiMap) this.h.get(enumprotocoldirection);
 
         if (object == null) {
             object = HashBiMap.create();
             this.h.put(enumprotocoldirection, object);
         }
 
-        if (((BiMap) object).containsValue(oclass)) {
-            String s = enumprotocoldirection + " packet " + oclass + " is already known to ID " + ((BiMap) object).inverse().get(oclass);
+        if (object.containsValue(oclass)) {
+            String s = enumprotocoldirection + " packet " + oclass + " is already known to ID " + object.inverse().get(oclass);
 
             LogManager.getLogger().fatal(s);
             throw new IllegalArgumentException(s);
         } else {
-            ((BiMap) object).put(Integer.valueOf(((BiMap) object).size()), oclass);
+            object.put(Integer.valueOf(object.size()), oclass);
             return this;
         }
     }
