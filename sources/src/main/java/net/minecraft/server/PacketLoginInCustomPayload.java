@@ -13,9 +13,9 @@ public class PacketLoginInCustomPayload implements Packet<PacketLoginInListener>
 
     @Override
     public void a(PacketDataSerializer packetdataserializer) throws IOException {
-        this.a = packetdataserializer.i();
+        this.a = packetdataserializer.g();
         if (packetdataserializer.readBoolean()) {
-            int i = packetdataserializer.readableBytes();
+            int i = packetdataserializer.g();
 
             if (i < 0 || i > 1048576) {
                 throw new IOException("Payload may not be larger than 1048576 bytes");

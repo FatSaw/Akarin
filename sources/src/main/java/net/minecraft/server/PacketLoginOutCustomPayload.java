@@ -20,9 +20,9 @@ public class PacketLoginOutCustomPayload implements Packet<PacketLoginOutListene
 
     @Override
     public void a(PacketDataSerializer packetdataserializer) throws IOException {
-        this.a = packetdataserializer.i();
-        this.b = packetdataserializer.o();
-        int i = packetdataserializer.readableBytes();
+        this.a = packetdataserializer.g();
+        this.b = packetdataserializer.l();
+        int i = packetdataserializer.g();
 
         if (i >= 0 && i <= 1048576) {
             this.c = new PacketDataSerializer(packetdataserializer.readBytes(i));
