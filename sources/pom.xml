@@ -155,16 +155,16 @@
 
     <repositories>
         <repository>
+            <id>spongepowered-repo</id>
+            <url>https://repo.spongepowered.org/maven/</url>
+        </repository>
+        <repository>
             <id>josephworks</id>
             <url>http://repo.josephworks.net/repository/maven-public/</url>
         </repository>
         <repository>
             <id>papermc</id>
             <url>https://papermc.io/repo/repository/maven-public/</url>
-        </repository>
-        <repository>
-            <id>spongepowered-repo</id>
-            <url>https://repo.spongepowered.org/maven/</url>
         </repository>
         <repository>
             <id>nallar-repo</id>
