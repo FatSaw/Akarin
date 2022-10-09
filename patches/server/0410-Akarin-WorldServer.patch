@@ -1,0 +1,55 @@
+From c519d60372513b56f929906cfe55d1af393e1f46 Mon Sep 17 00:00:00 2001
+From: Yiyu Si <1486864380@qq.com>
+Date: Sat, 20 Aug 2022 10:51:07 +0800
+Subject: [PATCH] Akarin WorldServer
+
+
+diff --git a/src/main/java/net/minecraft/server/WorldServer.java b/src/main/java/net/minecraft/server/WorldServer.java
+index e7261d59d..a43eb1168 100644
+--- a/src/main/java/net/minecraft/server/WorldServer.java
++++ b/src/main/java/net/minecraft/server/WorldServer.java
+@@ -27,6 +27,8 @@ import org.bukkit.event.entity.CreatureSpawnEvent.SpawnReason;
+ import org.bukkit.event.weather.LightningStrikeEvent;
+ // CraftBukkit end
+ 
++import io.akarin.api.internal.mixin.IMixinWorldServer; // Akarin
++
+ /**
+  * Akarin Changes Note
+  * 1) Expose private members (core, safety issue)
+@@ -59,6 +61,32 @@ public class WorldServer extends World implements IAsyncTaskHandler {
+     }
+     public final int dimension;
+ 
++    //Akarin Start
++    private final Object tickLock = new Object();
++
++    public Object lock() {
++        return tickLock;
++    }
++    
++    private final Random sharedRandom = new io.akarin.api.internal.utils.random.LightRandom() {
++        private static final long serialVersionUID = 1L;
++        private boolean locked = false;
++        @Override
++        public synchronized void setSeed(long seed) {
++            if (locked) {
++                LogManager.getLogger().error("Ignoring setSeed on Entity.SHARED_RANDOM", new Throwable());
++            } else {
++                super.setSeed(seed);
++                locked = true;
++            }
++        }
++    };
++    
++    public Random rand() {
++        return sharedRandom;
++    }
++    //Akarin End
++
+     // Add env and gen to constructor
+     public WorldServer(MinecraftServer minecraftserver, IDataManager idatamanager, WorldData worlddata, int i, MethodProfiler methodprofiler, org.bukkit.World.Environment env, org.bukkit.generator.ChunkGenerator gen) {
+         super(idatamanager, worlddata, DimensionManager.a(env.getId()).d(), methodprofiler, false, gen, env);
+-- 
+2.35.1.windows.2
+

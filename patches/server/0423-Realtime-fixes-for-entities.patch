@@ -1,0 +1,227 @@
+From f6f7a3913d80e23171278cf9a247fe3835724864 Mon Sep 17 00:00:00 2001
+From: Yiyu Si <1486864380@qq.com>
+Date: Thu, 1 Sep 2022 19:31:21 +0800
+Subject: [PATCH] Realtime fixes for entities
+
+
+diff --git a/src/main/java/net/minecraft/server/EntityAgeable.java b/src/main/java/net/minecraft/server/EntityAgeable.java
+index db23aedc4..c32c8a3c5 100644
+--- a/src/main/java/net/minecraft/server/EntityAgeable.java
++++ b/src/main/java/net/minecraft/server/EntityAgeable.java
+@@ -1,6 +1,7 @@
+ package net.minecraft.server;
+ 
+ import javax.annotation.Nullable;
++import io.akarin.api.internal.mixin.IMixinRealTimeTicking; // Akarin
+ 
+ public abstract class EntityAgeable extends EntityCreature {
+ 
+@@ -169,13 +170,17 @@ public abstract class EntityAgeable extends EntityCreature {
+ 
+             if (i < 0) {
+                 ++i;
+-                this.setAgeRaw(i);
++                // Akarin - fixup growing up
++                int diff = (int) ((IMixinRealTimeTicking) this.getWorld()).getRealTimeTicks() - 1;
++                this.setAgeRaw(Math.min(0, i + diff));
+                 if (i == 0) {
+                     this.p();
+                 }
+             } else if (i > 0) {
+                 --i;
+-                this.setAgeRaw(i);
++                // Akarin - fixup breeding cooldown
++                int diff = (int) ((IMixinRealTimeTicking) this.getWorld()).getRealTimeTicks() - 1;
++                this.setAgeRaw(Math.max(0, i - diff));
+             }
+         }
+ 
+diff --git a/src/main/java/net/minecraft/server/EntityExperienceOrb.java b/src/main/java/net/minecraft/server/EntityExperienceOrb.java
+index becb102c1..29a27388e 100644
+--- a/src/main/java/net/minecraft/server/EntityExperienceOrb.java
++++ b/src/main/java/net/minecraft/server/EntityExperienceOrb.java
+@@ -5,6 +5,7 @@ import org.bukkit.craftbukkit.event.CraftEventFactory;
+ import org.bukkit.event.entity.EntityTargetLivingEntityEvent;
+ import org.bukkit.event.entity.EntityTargetEvent;
+ // CraftBukkit end
++import io.akarin.api.internal.mixin.IMixinRealTimeTicking; // Akarin
+ 
+ public class EntityExperienceOrb extends Entity {
+ 
+@@ -87,7 +88,9 @@ public class EntityExperienceOrb extends Entity {
+         super.B_();
+         EntityHuman prevTarget = this.targetPlayer;// CraftBukkit - store old target
+         if (this.c > 0) {
+-            --this.c;
++            // Akarin - fixup pickup delay
++            int ticks = (int) ((IMixinRealTimeTicking) this.getWorld()).getRealTimeTicks();
++            this.c = Math.max(0, this.c - ticks); // OBFHELPER: delayBeforeCanPickup
+         }
+ 
+         this.lastX = this.locX;
+@@ -161,7 +164,11 @@ public class EntityExperienceOrb extends Entity {
+         }
+ 
+         ++this.a;
+-        ++this.b;
++
++        // Akarin - fixup age
++        int ticks = (int) ((IMixinRealTimeTicking) this.getWorld()).getRealTimeTicks();
++        this.b += ticks; // OBFHELPER: xpOrbAge
++
+         if (this.b >= 6000) {
+             this.die();
+         }
+diff --git a/src/main/java/net/minecraft/server/EntityHuman.java b/src/main/java/net/minecraft/server/EntityHuman.java
+index aa0b27f0e..6a4719e57 100644
+--- a/src/main/java/net/minecraft/server/EntityHuman.java
++++ b/src/main/java/net/minecraft/server/EntityHuman.java
+@@ -21,6 +21,7 @@ import org.bukkit.event.player.PlayerDropItemEvent;
+ import org.bukkit.event.player.PlayerVelocityEvent;
+ import org.bukkit.util.Vector;
+ // CraftBukkit end
++import io.akarin.api.internal.mixin.IMixinRealTimeTicking; // Akarin
+ 
+ public abstract class EntityHuman extends EntityLiving {
+ 
+@@ -120,11 +121,15 @@ public abstract class EntityHuman extends EntityLiving {
+         }
+ 
+         if (this.bD > 0) {
+-            --this.bD;
++            // Akarin - fixup xp cooldown
++            int ticks = (int) ((IMixinRealTimeTicking) this.getWorld()).getRealTimeTicks();
++            this.bD = Math.max(0, this.bD - ticks); // OBFHELPER: xpCooldown
+         }
+ 
+         if (this.isSleeping()) {
+-            ++this.sleepTicks;
++            // Akarin - fixup sleep timer
++            int ticks = (int) ((IMixinRealTimeTicking) this.getWorld()).getRealTimeTicks();
++            this.sleepTicks += ticks;
+             if (this.sleepTicks > 100) {
+                 this.sleepTicks = 100;
+             }
+@@ -137,7 +142,9 @@ public abstract class EntityHuman extends EntityLiving {
+                 }
+             }
+         } else if (this.sleepTicks > 0) {
+-            ++this.sleepTicks;
++            // Akarin - fixup wake timer
++            int ticks = (int) ((IMixinRealTimeTicking) this.getWorld()).getRealTimeTicks();
++            this.sleepTicks += ticks;
+             if (this.sleepTicks >= 110) {
+                 this.sleepTicks = 0;
+             }
+diff --git a/src/main/java/net/minecraft/server/EntityInsentient.java b/src/main/java/net/minecraft/server/EntityInsentient.java
+index d6a1933ad..0418f5390 100644
+--- a/src/main/java/net/minecraft/server/EntityInsentient.java
++++ b/src/main/java/net/minecraft/server/EntityInsentient.java
+@@ -19,6 +19,7 @@ import org.bukkit.event.entity.EntityTargetEvent;
+ import org.bukkit.event.entity.EntityUnleashEvent;
+ import org.bukkit.event.entity.EntityUnleashEvent.UnleashReason;
+ // CraftBukkit end
++import io.akarin.api.internal.mixin.IMixinRealTimeTicking; // Akarin
+ 
+ public abstract class EntityInsentient extends EntityLiving {
+ 
+@@ -653,7 +654,9 @@ public abstract class EntityInsentient extends EntityLiving {
+     }
+ 
+     protected final void doTick() {
+-        ++this.ticksFarFromPlayer;
++        // Akarin - fixup entity despawn age
++        int ticks = (int) ((IMixinRealTimeTicking) this.getWorld()).getRealTimeTicks();
++        this.ticksFarFromPlayer += ticks;
+         this.world.methodProfiler.a("checkDespawn");
+         this.L();
+         this.world.methodProfiler.b();
+diff --git a/src/main/java/net/minecraft/server/EntityItem.java b/src/main/java/net/minecraft/server/EntityItem.java
+index 4fafb4977..7646371d7 100644
+--- a/src/main/java/net/minecraft/server/EntityItem.java
++++ b/src/main/java/net/minecraft/server/EntityItem.java
+@@ -10,6 +10,7 @@ import org.bukkit.event.player.PlayerPickupItemEvent;
+ // CraftBukkit end
+ import org.bukkit.event.player.PlayerAttemptPickupItemEvent; // Paper
+ import com.destroystokyo.paper.HopperPusher; // Paper
++import io.akarin.api.internal.mixin.IMixinRealTimeTicking; // Akarin
+ 
+ // Paper start - implement HopperPusher
+ public class EntityItem extends Entity implements HopperPusher {
+@@ -69,6 +70,7 @@ public class EntityItem extends Entity implements HopperPusher {
+         } else {
+             super.B_();
+             if (tryPutInHopper()) return; // Paper
++            /* Akarin Start - override craftbukkit patches and implement akarin's realtime api
+             // CraftBukkit start - Use wall time for pickup and despawn timers
+             int elapsedTicks = MinecraftServer.currentTick - this.lastTick;
+             if (this.pickupDelay != 32767) this.pickupDelay -= elapsedTicks;
+@@ -76,6 +78,12 @@ public class EntityItem extends Entity implements HopperPusher {
+             if (this.age != -32768) this.age += elapsedTicks;
+             this.lastTick = MinecraftServer.currentTick;
+             // CraftBukkit end
++            */
++            int ticksPickup = (int) ((IMixinRealTimeTicking) this.getWorld()).getRealTimeTicks();
++            this.pickupDelay = Math.max(0, this.pickupDelay - ticksPickup);
++            int ticksAge = (int) ((IMixinRealTimeTicking) this.getWorld()).getRealTimeTicks();
++            this.age += ticksAge;
++            // Akarin End
+ 
+             this.lastX = this.locX;
+             this.lastY = this.locY;
+diff --git a/src/main/java/net/minecraft/server/EntityPlayer.java b/src/main/java/net/minecraft/server/EntityPlayer.java
+index 867b9e403..f307f0aff 100644
+--- a/src/main/java/net/minecraft/server/EntityPlayer.java
++++ b/src/main/java/net/minecraft/server/EntityPlayer.java
+@@ -30,6 +30,7 @@ import org.bukkit.event.player.PlayerLocaleChangeEvent;
+ import org.bukkit.event.player.PlayerTeleportEvent.TeleportCause;
+ import org.bukkit.inventory.MainHand;
+ // CraftBukkit end
++import io.akarin.api.internal.mixin.IMixinRealTimeTicking; // Akarin
+ 
+ /**
+  * Akarin Changes Note
+@@ -1386,7 +1387,9 @@ public class EntityPlayer extends EntityHuman implements ICrafting {
+ 
+     protected void I() {
+         if (this.portalCooldown > 0 && !this.worldChangeInvuln) {
+-            --this.portalCooldown;
++            // Akarin - fixup portal cooldown
++            int ticks = (int) ((IMixinRealTimeTicking) this.getWorld()).getRealTimeTicks();
++            this.portalCooldown = Math.max(0, this.portalCooldown - ticks);
+         }
+ 
+     }
+diff --git a/src/main/java/net/minecraft/server/EntityZombieVillager.java b/src/main/java/net/minecraft/server/EntityZombieVillager.java
+index dde846c61..633025377 100644
+--- a/src/main/java/net/minecraft/server/EntityZombieVillager.java
++++ b/src/main/java/net/minecraft/server/EntityZombieVillager.java
+@@ -2,6 +2,7 @@ package net.minecraft.server;
+ 
+ import java.util.UUID;
+ import javax.annotation.Nullable;
++import io.akarin.api.internal.mixin.IMixinRealTimeTicking; // Akarin
+ 
+ public class EntityZombieVillager extends EntityZombie {
+ 
+@@ -60,12 +61,16 @@ public class EntityZombieVillager extends EntityZombie {
+ 
+     public void B_() {
+         if (!this.world.isClientSide && this.isConverting() && this.isAlive()) { // CraftBukkit
+-            int i = this.du();
++            // Akarin - fixup conversion time boost
++            int ticks = (int) ((IMixinRealTimeTicking) this.getWorld()).getRealTimeTicks();
++            int i = this.du() * ticks;
++            /*
+             // CraftBukkit start - Use wall time instead of ticks for villager conversion
+             int elapsedTicks = MinecraftServer.currentTick - this.lastTick;
+             this.lastTick = MinecraftServer.currentTick;
+             i *= elapsedTicks;
+             // CraftBukkit end
++            */
+ 
+             this.conversionTime -= i;
+             if (this.conversionTime <= 0) {
+-- 
+2.35.1.windows.2
+

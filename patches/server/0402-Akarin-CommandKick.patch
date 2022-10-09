@@ -1,0 +1,69 @@
+From 0e3918214ab63ceb157738f80ae9e6e4e18f84d7 Mon Sep 17 00:00:00 2001
+From: Yiyu Si <1486864380@qq.com>
+Date: Fri, 19 Aug 2022 22:20:32 +0800
+Subject: [PATCH] Akarin CommandKick
+
+
+diff --git a/src/main/java/net/minecraft/server/CommandKick.java b/src/main/java/net/minecraft/server/CommandKick.java
+index d85ae4bdb..8700dbfa9 100644
+--- a/src/main/java/net/minecraft/server/CommandKick.java
++++ b/src/main/java/net/minecraft/server/CommandKick.java
+@@ -3,6 +3,7 @@ package net.minecraft.server;
+ import java.util.Collections;
+ import java.util.List;
+ import javax.annotation.Nullable;
++import io.akarin.server.core.AkarinGlobalConfig; //Akarin
+ 
+ public class CommandKick extends CommandAbstract {
+ 
+@@ -20,28 +21,33 @@ public class CommandKick extends CommandAbstract {
+         return "commands.kick.usage";
+     }
+ 
+-    public void execute(MinecraftServer minecraftserver, ICommandListener icommandlistener, String[] astring) throws CommandException {
+-        if (astring.length > 0 && astring[0].length() > 1) {
+-            EntityPlayer entityplayer = minecraftserver.getPlayerList().getPlayer(astring[0]);
++    //Akarin Start
++    public void execute(MinecraftServer server, ICommandListener sender, String[] args) throws CommandException {
++        if (args.length > 0 && args[0].length() > 1) {
++            EntityPlayer target = server.getPlayerList().getPlayer(args[0]);
+ 
+-            if (entityplayer == null) {
+-                throw new ExceptionPlayerNotFound("commands.generic.player.notFound", new Object[] { astring[0]});
++            if (target == null) {
++                throw new ExceptionPlayerNotFound("commands.generic.player.notFound", args[0]);
+             } else {
+-                if (astring.length >= 2) {
+-                    IChatBaseComponent ichatbasecomponent = a(icommandlistener, astring, 1);
+-
+-                    entityplayer.playerConnection.disconnect(ichatbasecomponent);
+-                    a(icommandlistener, (ICommand) this, "commands.kick.success.reason", new Object[] { entityplayer.getName(), ichatbasecomponent.toPlainText()});
++                if (args.length >= 2) {
++                    // Akarin start - use string
++                    String message = "";
++                    for (int i = 2; i < args.length; i++) {
++                        message = message + args[i];
++                    }
++                    target.playerConnection.disconnect(message);
++                    CommandAbstract.a(sender, (ICommand) this, "commands.kick.success.reason", target.getName(), message); // OBFHELPER: notifyCommandListener
++                    // Akarin end
+                 } else {
+-                    entityplayer.playerConnection.disconnect(new ChatMessage("multiplayer.disconnect.kicked", new Object[0]));
+-                    a(icommandlistener, (ICommand) this, "commands.kick.success", new Object[] { entityplayer.getName()});
++                    target.playerConnection.disconnect(AkarinGlobalConfig.messageKick); // Akarin
++                    CommandAbstract.a(sender, (ICommand) this, "commands.kick.success", target.getName()); // OBFHELPER: notifyCommandListener
+                 }
+-
+             }
+         } else {
+-            throw new ExceptionUsage("commands.kick.usage", new Object[0]);
++            throw new ExceptionUsage("commands.kick.usage");
+         }
+     }
++    //Akarin End
+ 
+     public List<String> tabComplete(MinecraftServer minecraftserver, ICommandListener icommandlistener, String[] astring, @Nullable BlockPosition blockposition) {
+         return astring.length >= 1 ? a(astring, minecraftserver.getPlayers()) : Collections.emptyList();
+-- 
+2.35.1.windows.2
+

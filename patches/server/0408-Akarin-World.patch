@@ -1,0 +1,40 @@
+From 6b07cfbe901b01b672fa9c2d60a3874b1da3d80b Mon Sep 17 00:00:00 2001
+From: Yiyu Si <1486864380@qq.com>
+Date: Sat, 20 Aug 2022 10:40:02 +0800
+Subject: [PATCH] Akarin World
+
+
+diff --git a/src/main/java/net/minecraft/server/World.java b/src/main/java/net/minecraft/server/World.java
+index 1f675d363..9ed737467 100644
+--- a/src/main/java/net/minecraft/server/World.java
++++ b/src/main/java/net/minecraft/server/World.java
+@@ -1885,19 +1885,18 @@ public abstract class World implements IBlockAccess {
+     }
+     // Paper end
+ 
+-    public boolean a(AxisAlignedBB axisalignedbb, @Nullable Entity entity) {
+-        List list = this.getEntities((Entity) null, axisalignedbb);
+-
+-        for (int i = 0; i < list.size(); ++i) {
+-            Entity entity1 = (Entity) list.get(i);
+-
+-            if (!entity1.dead && entity1.i && entity1 != entity && (entity == null || entity1.x(entity))) {
++    //Akarin Start
++    public boolean a(AxisAlignedBB box, @Nullable Entity target) { // OBFHELPER: checkNoEntityCollision
++        List<Entity> list = this.getEntities(null, box);
++        
++        for (Entity each : list) {
++            if (!each.dead && each.i && each != target && (target == null || !each.x(target))) { // OBFHELPER: preventEntitySpawning - isRidingSameEntity
+                 return false;
+             }
+         }
+-
+         return true;
+     }
++    //Akarin End
+ 
+     public boolean c(AxisAlignedBB axisalignedbb) {
+         int i = MathHelper.floor(axisalignedbb.a);
+-- 
+2.35.1.windows.2
+

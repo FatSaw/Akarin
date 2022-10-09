@@ -1,0 +1,73 @@
+From 1ec1b0d915c8308daede951ff4876238cf46c51b Mon Sep 17 00:00:00 2001
+From: Yiyu Si <1486864380@qq.com>
+Date: Fri, 19 Aug 2022 22:18:06 +0800
+Subject: [PATCH] Akarin CommandBanIp
+
+
+diff --git a/src/main/java/net/minecraft/server/CommandBanIp.java b/src/main/java/net/minecraft/server/CommandBanIp.java
+index e0372a462..adf2a62e6 100644
+--- a/src/main/java/net/minecraft/server/CommandBanIp.java
++++ b/src/main/java/net/minecraft/server/CommandBanIp.java
+@@ -7,6 +7,10 @@ import java.util.List;
+ import java.util.regex.Matcher;
+ import java.util.regex.Pattern;
+ import javax.annotation.Nullable;
++//Akarin Start
++import io.akarin.api.internal.Akari;
++import io.akarin.server.core.AkarinGlobalConfig;
++//Akarin End
+ 
+ public class CommandBanIp extends CommandAbstract {
+ 
+@@ -56,26 +60,30 @@ public class CommandBanIp extends CommandAbstract {
+         return astring.length == 1 ? a(astring, minecraftserver.getPlayers()) : Collections.emptyList();
+     }
+ 
+-    protected void a(MinecraftServer minecraftserver, ICommandListener icommandlistener, String s, @Nullable String s1) {
+-        IpBanEntry ipbanentry = new IpBanEntry(s, (Date) null, icommandlistener.getName(), (Date) null, s1);
+-
+-        minecraftserver.getPlayerList().getIPBans().add(ipbanentry);
+-        List list = minecraftserver.getPlayerList().b(s);
+-        String[] astring = new String[list.size()];
+-        int i = 0;
+-
+-        EntityPlayer entityplayer;
+-
+-        for (Iterator iterator = list.iterator(); iterator.hasNext(); astring[i++] = entityplayer.getName()) {
+-            entityplayer = (EntityPlayer) iterator.next();
+-            entityplayer.playerConnection.disconnect(new ChatMessage("multiplayer.disconnect.ip_banned", new Object[0]));
++    protected void a(MinecraftServer server, ICommandListener sender, String args, @Nullable String banReason) {
++        // Akarin start - modify message
++        boolean hasReason = true;
++        if (banReason == null) {
++            banReason = Akari.EMPTY_STRING;
++            hasReason = false;
+         }
+-
+-        if (list.isEmpty()) {
+-            a(icommandlistener, (ICommand) this, "commands.banip.success", new Object[] { s});
++        // Akarin end
++        IpBanEntry ipbanentry = new IpBanEntry(args, (Date) null, sender.getName(), (Date) null, banReason);
++
++        server.getPlayerList().getIPBans().add(ipbanentry);
++        List<EntityPlayer> withIpPlayers = server.getPlayerList().b(args); // OBFHELPER: getPlayersMatchingAddress
++        String[] banPlayerNames = new String[withIpPlayers.size()];
++        
++        for (int i = 0; i < banPlayerNames.length; i++) {
++            EntityPlayer each = withIpPlayers.get(i);
++            banPlayerNames[i] = each.getName();
++            each.playerConnection.disconnect(hasReason ? banReason : AkarinGlobalConfig.messageBanIp); // Akarin
++        }
++        
++        if (withIpPlayers.isEmpty()) {
++            CommandAbstract.a(sender, (ICommand) this, "commands.banip.success", args); // OBFHELPER: notifyCommandListener
+         } else {
+-            a(icommandlistener, (ICommand) this, "commands.banip.success.players", new Object[] { s, a((Object[]) astring)});
++            CommandAbstract.a(sender, (ICommand) this, "commands.banip.success.players", args, CommandAbstract.a(banPlayerNames)); // OBFHELPER: notifyCommandListener - joinNiceString
+         }
+-
+     }
+ }
+-- 
+2.35.1.windows.2
+

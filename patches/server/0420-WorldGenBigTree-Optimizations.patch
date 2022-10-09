@@ -1,0 +1,28 @@
+From 48e10f516e37ed6dfdf3d411089c3ab2698f727a Mon Sep 17 00:00:00 2001
+From: Yiyu Si <1486864380@qq.com>
+Date: Fri, 26 Aug 2022 22:21:03 +0800
+Subject: [PATCH] WorldGenBigTree Optimizations
+
+
+diff --git a/src/main/java/net/minecraft/server/WorldGenBigTree.java b/src/main/java/net/minecraft/server/WorldGenBigTree.java
+index b2fbe1c30..ebb22394c 100644
+--- a/src/main/java/net/minecraft/server/WorldGenBigTree.java
++++ b/src/main/java/net/minecraft/server/WorldGenBigTree.java
+@@ -247,12 +247,14 @@ public class WorldGenBigTree extends WorldGenTreeAbstract {
+         }
+ 
+         if (!this.f()) {
++            world = null; // Akarin - remove references to world objects to avoid memory leaks
+             return false;
+         } else {
+             this.a();
+             this.b();
+             this.c();
+             this.d();
++            world = null; // Akarin - remove references to world objects to avoid memory leaks
+             return true;
+         }
+     }
+-- 
+2.35.1.windows.2
+

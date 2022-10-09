@@ -1,0 +1,307 @@
+From 63ffa450c996a66bc5c598573b08e21a62c2c08d Mon Sep 17 00:00:00 2001
+From: Yiyu Si <1486864380@qq.com>
+Date: Fri, 26 Aug 2022 21:28:51 +0800
+Subject: [PATCH] Akarin NSC Optimizations
+
+
+diff --git a/src/main/java/net/minecraft/server/NetworkManager.java b/src/main/java/net/minecraft/server/NetworkManager.java
+index 1cc6da9ed..dbc490de1 100644
+--- a/src/main/java/net/minecraft/server/NetworkManager.java
++++ b/src/main/java/net/minecraft/server/NetworkManager.java
+@@ -29,6 +29,7 @@ import org.apache.logging.log4j.LogManager;
+ import org.apache.logging.log4j.Logger;
+ import org.apache.logging.log4j.Marker;
+ import org.apache.logging.log4j.MarkerManager;
++import io.akarin.api.internal.utils.CheckedConcurrentLinkedQueue; // Akarin
+ 
+ /**
+  * Akarin Changes Note
+@@ -233,35 +234,39 @@ public class NetworkManager extends SimpleChannelInboundHandler<Packet<?>> {
+ 
+     // Paper start - Async-Anti-Xray - Stop dispatching further packets and return false if the peeked packet is a chunk packet which is not ready
+     private boolean trySendQueue() { return this.m(); } // OBFHELPER
+-    private boolean m() { // void -> boolean
++    // Akarin Start
++    @SuppressWarnings("unchecked")
++    private static final QueuedPacket SIGNAL_PACKET = new QueuedPacket(null);
++
++    private boolean m() {
+         if (this.channel != null && this.channel.isOpen()) {
+             if (this.i.isEmpty()) { // return if the packet queue is empty so that the write lock by Anti-Xray doesn't affect the vanilla performance at all
+                 return true;
+             }
+ 
+-            this.j.writeLock().lock(); // readLock -> writeLock (because of race condition between peek and poll)
+-
++            this.j.updateLock().lock();
+             try {
+                 while (!this.i.isEmpty()) {
+-                    NetworkManager.QueuedPacket networkmanager_queuedpacket = this.getPacketQueue().peek(); // poll -> peek
+-
+-                    if (networkmanager_queuedpacket != null) { // Fix NPE (Spigot bug caused by handleDisconnection())
+-                        if (networkmanager_queuedpacket.getPacket() instanceof PacketPlayOutMapChunk && !((PacketPlayOutMapChunk) networkmanager_queuedpacket.getPacket()).isReady()) { // Check if the peeked packet is a chunk packet which is not ready
++                    NetworkManager.QueuedPacket packet = ((CheckedConcurrentLinkedQueue<QueuedPacket>) getPacketQueue()).poll(item -> {
++                        return item.getPacket() instanceof PacketPlayOutMapChunk && !((PacketPlayOutMapChunk) item.getPacket()).isReady();
++                    }, SIGNAL_PACKET);
++                    
++                    if (packet != null) { // Fix NPE (Spigot bug caused by handleDisconnection())
++                        if (packet == SIGNAL_PACKET) {
+                             return false; // Return false if the peeked packet is a chunk packet which is not ready
+                         } else {
+-                            this.getPacketQueue().poll(); // poll here
+-                            this.dispatchPacket(networkmanager_queuedpacket.getPacket(), networkmanager_queuedpacket.getGenericFutureListeners()); // dispatch the packet
++                            dispatchPacket(packet.getPacket(), packet.getGenericFutureListeners()); // dispatch the packet
+                         }
+                     }
+                 }
+             } finally {
+-                this.j.writeLock().unlock(); // readLock -> writeLock (because of race condition between peek and poll)
++                this.j.updateLock().unlock();
+             }
+-
++            
+         }
+-
+         return true; // Return true if all packets were dispatched
+     }
++    // Akarin End
+     // Paper end
+ 
+     public void a() {
+diff --git a/src/main/java/net/minecraft/server/ServerConnection.java b/src/main/java/net/minecraft/server/ServerConnection.java
+index 4a629aaa1..d83929ad5 100644
+--- a/src/main/java/net/minecraft/server/ServerConnection.java
++++ b/src/main/java/net/minecraft/server/ServerConnection.java
+@@ -25,10 +25,19 @@ import java.util.Iterator;
+ import java.util.List;
+ import org.apache.logging.log4j.LogManager;
+ import org.apache.logging.log4j.Logger;
++// Akarin Start
++import io.akarin.api.internal.LocalAddress;
++import io.akarin.server.core.AkarinGlobalConfig;
++import java.util.Collection;
++import io.netty.channel.ServerChannel;
++import java.net.UnknownHostException;
++import org.spigotmc.SpigotConfig;
++// Akarin End
+ 
+ public class ServerConnection {
+ 
+     private static final Logger e = LogManager.getLogger();
++    private final static Logger logger = LogManager.getLogger("NSC"); // Akarin
+     public static final LazyInitVar<NioEventLoopGroup> a = new LazyInitVar() {
+         protected NioEventLoopGroup a() {
+             return new NioEventLoopGroup(0, (new ThreadFactoryBuilder()).setNameFormat("Netty Server IO #%d").setDaemon(true).build());
+@@ -75,119 +84,113 @@ public class ServerConnection {
+         this.d = true;
+     }
+ 
+-    public void a(InetAddress inetaddress, int i) throws IOException {
+-        List list = this.g;
+-
+-        synchronized (this.g) {
+-            Class oclass;
+-            LazyInitVar lazyinitvar;
+-
+-            if (Epoll.isAvailable() && this.f.af()) {
+-                oclass = EpollServerSocketChannel.class;
+-                lazyinitvar = ServerConnection.b;
+-                ServerConnection.e.info("Using epoll channel type");
+-            } else {
+-                oclass = NioServerSocketChannel.class;
+-                lazyinitvar = ServerConnection.a;
+-                ServerConnection.e.info("Using default channel type");
++    // Akarin Start
++    public void a(InetAddress address, int port) throws IOException {
++        registerChannels(Lists.newArrayList(LocalAddress.create(address, port)));
++    }
++    
++    public void registerChannels(Collection<LocalAddress> data) throws IOException {
++        Class<? extends ServerChannel> channelClass;
++        EventLoopGroup loopGroup;
++        
++        if (Epoll.isAvailable() && this.f.af()) { // OBFHELPER: MinecraftServer::useNativeTransport
++            channelClass = EpollServerSocketChannel.class;
++            loopGroup = ServerConnection.b.c();
++            logger.info("Using epoll channel type");
++        } else {
++            channelClass = NioServerSocketChannel.class;
++            loopGroup = ServerConnection.a.c();
++            logger.info("Using nio channel type");
++        }
++        
++        ServerBootstrap bootstrap = new ServerBootstrap().channel(channelClass).childHandler(new ChannelInitializer<Channel>() {
++            @Override
++            protected void initChannel(Channel channel) throws Exception {
++                try {
++                    channel.config().setOption(ChannelOption.TCP_NODELAY, true);
++                } catch (ChannelException ex) {
++                    ;
++                }
++                channel.pipeline().addLast("timeout", new ReadTimeoutHandler(30))
++                                  .addLast("legacy_query", new LegacyPingHandler(MinecraftServer.getServer().getServerConnection()))
++                                  .addLast("splitter", new PacketSplitter()).addLast("decoder", new PacketDecoder(EnumProtocolDirection.SERVERBOUND))
++                                  .addLast("prepender", new PacketPrepender()).addLast("encoder", new PacketEncoder(EnumProtocolDirection.CLIENTBOUND));
++                
++                NetworkManager manager = new NetworkManager(EnumProtocolDirection.SERVERBOUND);
++                h.add(manager);
++                
++                channel.pipeline().addLast("packet_handler", manager);
++                manager.setPacketListener(new HandshakeListener(MinecraftServer.getServer(), manager));
+             }
+-
+-            this.g.add(((ServerBootstrap) ((ServerBootstrap) (new ServerBootstrap()).channel(oclass)).childHandler(new ChannelInitializer() {
+-                protected void initChannel(Channel channel) throws Exception {
+-                    try {
+-                        channel.config().setOption(ChannelOption.TCP_NODELAY, Boolean.valueOf(true));
+-                    } catch (ChannelException channelexception) {
+-                        ;
+-                    }
+-
+-                    channel.pipeline().addLast("timeout", new ReadTimeoutHandler(30)).addLast("legacy_query", new LegacyPingHandler(ServerConnection.this)).addLast("splitter", new PacketSplitter()).addLast("decoder", new PacketDecoder(EnumProtocolDirection.SERVERBOUND)).addLast("prepender", new PacketPrepender()).addLast("encoder", new PacketEncoder(EnumProtocolDirection.CLIENTBOUND));
+-                    NetworkManager networkmanager = new NetworkManager(EnumProtocolDirection.SERVERBOUND);
+-
+-                    pending.add(networkmanager); // Paper
+-                    channel.pipeline().addLast("packet_handler", networkmanager);
+-                    networkmanager.setPacketListener(new HandshakeListener(ServerConnection.this.f, networkmanager));
++        }).group(loopGroup);
++        synchronized (g) {
++            data.addAll(Lists.transform(AkarinGlobalConfig.extraAddress, s -> {
++                String[] info = s.split(":");
++                try {
++                    logger.info("Attempt to bind server on " + s);
++                    return LocalAddress.create(InetAddress.getByName(info[0]), Integer.valueOf(info[1]));
++                } catch (NumberFormatException | UnknownHostException ex) {
++                    logger.error("Error on lookup additional host, wrong format?", ex);
++                    return null;
+                 }
+-            }).group((EventLoopGroup) lazyinitvar.c()).localAddress(inetaddress, i)).bind().syncUninterruptibly());
++            }));
++            data.forEach(address -> g.add(bootstrap.localAddress(address.host(), address.port()).bind().syncUninterruptibly())); // supports multi-port bind
+         }
+     }
+ 
+     public void b() {
+         this.d = false;
+-        Iterator iterator = this.g.iterator();
+-
+-        while (iterator.hasNext()) {
+-            ChannelFuture channelfuture = (ChannelFuture) iterator.next();
+-
+-            try {
+-                channelfuture.channel().close().sync();
+-            } catch (InterruptedException interruptedexception) {
+-                ServerConnection.e.error("Interrupted whilst closing channel");
++        try {
++            synchronized (g) { // safe fixes
++                for (ChannelFuture channel : g) channel.channel().close().sync();
+             }
++        } catch (InterruptedException ex) {
++            logger.error("Interrupted whilst closing channel");
+         }
+-
+     }
+ 
+-    public void c() {
+-        List list = this.h;
+-
+-        synchronized (this.h) {
+-            // Spigot Start
+-            addPending(); // Paper
+-            // This prevents players from 'gaming' the server, and strategically relogging to increase their position in the tick order
+-            if ( org.spigotmc.SpigotConfig.playerShuffle > 0 && MinecraftServer.currentTick % org.spigotmc.SpigotConfig.playerShuffle == 0 )
+-            {
+-                Collections.shuffle( this.h );
++    public void c() throws InterruptedException {
++        synchronized (h) {
++            // Spigot - This prevents players from 'gaming' the server, and strategically relogging to increase their position in the tick order
++            if (SpigotConfig.playerShuffle > 0 && MinecraftServer.currentTick % SpigotConfig.playerShuffle == 0) {
++                Collections.shuffle(h);
+             }
+-            // Spigot End
+-            Iterator iterator = this.h.iterator();
+-
+-            while (iterator.hasNext()) {
+-                final NetworkManager networkmanager = (NetworkManager) iterator.next();
+-
+-                if (!networkmanager.h()) {
+-                    if (networkmanager.isConnected()) {
+-                        try {
+-                            networkmanager.a();
+-                        } catch (Exception exception) {
+-                            if (networkmanager.isLocal()) {
+-                                CrashReport crashreport = CrashReport.a(exception, "Ticking memory connection");
+-                                CrashReportSystemDetails crashreportsystemdetails = crashreport.a("Ticking connection");
+-
+-                                crashreportsystemdetails.a("Connection", new CrashReportCallable() {
+-                                    public String a() throws Exception {
+-                                        return networkmanager.toString();
+-                                    }
+-
+-                                    public Object call() throws Exception {
+-                                        return this.a();
+-                                    }
+-                                });
+-                                throw new ReportedException(crashreport);
+-                            }
+-
+-                            ServerConnection.e.warn("Failed to handle packet for {}", networkmanager.getSocketAddress(), exception);
+-                            final ChatComponentText chatcomponenttext = new ChatComponentText("Internal server error");
+-
+-                            networkmanager.sendPacket(new PacketPlayOutKickDisconnect(chatcomponenttext), new GenericFutureListener() {
+-                                public void operationComplete(Future future) throws Exception {
+-                                    networkmanager.close(chatcomponenttext);
+-                                }
+-                            }, new GenericFutureListener[0]);
+-                            networkmanager.stopReading();
+-                        }
+-                    } else {
+-                        // Spigot Start
+-                        // Fix a race condition where a NetworkManager could be unregistered just before connection.
+-                        if (networkmanager.preparing) continue;
+-                        // Spigot End
+-                        iterator.remove();
+-                        networkmanager.handleDisconnection();
+-                    }
++            
++            Iterator<NetworkManager> it = h.iterator();
++            while (it.hasNext()) {
++                NetworkManager manager = it.next();
++                if (manager.h()) continue; // OBFHELPER: NetworkManager::hasNoChannel
++                
++                if (manager.isConnected()) {
++                    processPackets(manager);
++                } else {
++                    // Spigot - Fix a race condition where a NetworkManager could be unregistered just before connection.
++                    if (manager.preparing) continue;
++                    
++                    it.remove();
++                    manager.handleDisconnection();
+                 }
+             }
++        }
++    }
+ 
++    public void processPackets(NetworkManager manager) {
++        try {
++            manager.a(); // OBFHELPER: NetworkManager::processReceivedPackets
++        } catch (Exception ex) {
++            logger.warn("Failed to handle packet for {}", manager.getSocketAddress(), ex);
++            final ChatComponentText message = new ChatComponentText("Internal server error");
++            
++            manager.sendPacket(new PacketPlayOutKickDisconnect(message), new GenericFutureListener<Future<? super Void>>() {
++                @Override
++                public void operationComplete(Future<? super Void> future) throws Exception {
++                    manager.close(message);
++                }
++            }, new GenericFutureListener[0]);
++            manager.stopReading();
+         }
+     }
++    // Akarin End
+ 
+     public MinecraftServer d() {
+         return this.f;
+-- 
+2.35.1.windows.2
+

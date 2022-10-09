@@ -1,0 +1,87 @@
+From 87963b9cf0c0ee14feb9f70b38c4ace1dae38c18 Mon Sep 17 00:00:00 2001
+From: Yiyu Si <1486864380@qq.com>
+Date: Fri, 19 Aug 2022 22:38:19 +0800
+Subject: [PATCH] Akarin FileIOThread
+
+
+diff --git a/src/main/java/net/minecraft/server/FileIOThread.java b/src/main/java/net/minecraft/server/FileIOThread.java
+index 2fb331c08..2c6099a90 100644
+--- a/src/main/java/net/minecraft/server/FileIOThread.java
++++ b/src/main/java/net/minecraft/server/FileIOThread.java
+@@ -2,6 +2,19 @@ package net.minecraft.server;
+ 
+ import java.util.List;
+ 
++//Akarin Start
++
++import java.util.concurrent.Executor;
++import java.util.concurrent.Executors;
++import java.util.concurrent.atomic.AtomicInteger;
++
++import com.destroystokyo.paper.PaperConfig;
++import com.google.common.util.concurrent.ThreadFactoryBuilder;
++
++import io.akarin.server.core.AkarinGlobalConfig;
++
++//Akarin End
++
+ /**
+  * Akarin Changes Note
+  * 1) Multi-threaded chunk saving (performance)
+@@ -14,6 +27,9 @@ public class FileIOThread implements Runnable {
+     private volatile long d;
+     private volatile boolean e;
+ 
++    private final Executor executor = Executors.newFixedThreadPool(AkarinGlobalConfig.fileIOThreads, new ThreadFactoryBuilder().setNameFormat("Akarin File IO Thread - %1$d").setPriority(1).build());
++    private final AtomicInteger queuedChunkCounter = new AtomicInteger(0);
++
+     private FileIOThread() {
+         // Thread thread = new Thread(this, "File IO Thread"); // Akarin
+ 
+@@ -62,20 +78,35 @@ public class FileIOThread implements Runnable {
+ 
+     }
+ 
++    //Akarin Start
++
+     public void a(IAsyncChunkSaver iasyncchunksaver) {
+-        if (!this.b.contains(iasyncchunksaver)) {
+-            ++this.c;
+-            this.b.add(iasyncchunksaver);
++        queuedChunkCounter.incrementAndGet();
++        executor.execute(() -> writeChunk(iasyncchunksaver));
++    }
++
++    private void writeChunk(IAsyncChunkSaver iasyncchunksaver)  {
++        if (!iasyncchunksaver.a()) { // PAIL: WriteNextIO() -> Returns if the write was unsuccessful
++            queuedChunkCounter.decrementAndGet();
++            
++            if (PaperConfig.enableFileIOThreadSleep) {
++                try {
++                    Thread.sleep(this.e ? 0L : 2L);
++                } catch (InterruptedException ex) {
++                    ex.printStackTrace();
++                }
++            }
++        } else {
++            writeChunk(iasyncchunksaver);
+         }
+     }
+ 
+     public void b() throws InterruptedException {
+         this.e = true;
+-
+-        while (this.c != this.d) {
+-            Thread.sleep(10L);
+-        }
+-
++        while (queuedChunkCounter.get() != 0) Thread.sleep(9L);
+         this.e = false;
+     }
++
++    //Akarin End
++    
+ }
+-- 
+2.35.1.windows.2
+

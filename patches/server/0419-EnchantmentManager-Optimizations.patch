@@ -1,0 +1,122 @@
+From c4622af9da84dc4ce872c6f74a37c8506a96b9df Mon Sep 17 00:00:00 2001
+From: Yiyu Si <1486864380@qq.com>
+Date: Fri, 26 Aug 2022 22:20:41 +0800
+Subject: [PATCH] EnchantmentManager Optimizations
+
+
+diff --git a/src/main/java/net/minecraft/server/EnchantmentManager.java b/src/main/java/net/minecraft/server/EnchantmentManager.java
+index 10e89e7e9..2e9d268ba 100644
+--- a/src/main/java/net/minecraft/server/EnchantmentManager.java
++++ b/src/main/java/net/minecraft/server/EnchantmentManager.java
+@@ -18,7 +18,7 @@ public class EnchantmentManager {
+ 
+     private static final EnchantmentManager.EnchantmentModifierProtection a = new EnchantmentManager.EnchantmentModifierProtection(null);
+     private static final EnchantmentManager.EnchantmentModifierDamage b = new EnchantmentManager.EnchantmentModifierDamage(null);
+-    private static final EnchantmentManager.EnchantmentModifierThorns c = new EnchantmentManager.EnchantmentModifierThorns(null);
++    private static final EnchantmentManager.EnchantmentModifierc c = new EnchantmentManager.EnchantmentModifierc(null);
+     private static final EnchantmentManager.EnchantmentModifierArthropods d = new EnchantmentManager.EnchantmentModifierArthropods(null);
+ 
+     public static int getEnchantmentLevel(Enchantment enchantment, ItemStack itemstack) {
+@@ -114,11 +114,12 @@ public class EnchantmentManager {
+ 
+     }
+ 
+-    public static int a(Iterable<ItemStack> iterable, DamageSource damagesource) {
+-        EnchantmentManager.a.a = 0;
+-        EnchantmentManager.a.b = damagesource;
+-        a(EnchantmentManager.a, iterable);
+-        return EnchantmentManager.a.a;
++    public static int a(Iterable<ItemStack> iterable, DamageSource damageSource) {
++        a.a = 0; // OBFHELPER: damageModifier
++        a.b = damageSource;
++        a(a, iterable); // OBFHELPER: applyEnchantmentModifierArray
++        a.b = null; // Akarin - Remove reference to Damagesource
++        return a.a;
+     }
+ 
+     public static float a(ItemStack itemstack, EnumMonsterType enummonstertype) {
+@@ -134,30 +135,38 @@ public class EnchantmentManager {
+         return i > 0 ? EnchantmentSweeping.e(i) : 0.0F;
+     }
+ 
+-    public static void a(EntityLiving entityliving, Entity entity) {
+-        EnchantmentManager.c.b = entity;
+-        EnchantmentManager.c.a = entityliving;
+-        if (entityliving != null) {
+-            a(EnchantmentManager.c, entityliving.aQ());
++    public static void a(EntityLiving user, Entity attacker) { // OBFHELPER: applyThornEnchantments
++        c.b = attacker;
++        c.a = user;
++        if (user != null) {
++            a(c, user.aQ()); // OBFHELPER: applyEnchantmentModifierArray - getEquipmentAndArmor
+         }
+-
+-        if (entity instanceof EntityHuman) {
+-            a(EnchantmentManager.c, entityliving.getItemInMainHand());
++        
++        if (attacker instanceof EntityHuman) {
++            a(c, user.getItemInMainHand()); // OBFHELPER: applyEnchantmentModifier
+         }
+-
+-    }
+-
+-    public static void b(EntityLiving entityliving, Entity entity) {
+-        EnchantmentManager.d.a = entityliving;
+-        EnchantmentManager.d.b = entity;
+-        if (entityliving != null) {
+-            a(EnchantmentManager.d, entityliving.aQ());
++        
++        // Akarin Start - remove references to entity objects to avoid memory leaks
++        c.b = null;
++        c.a = null;
++        // Akarin end
++    }
++
++    public static void b(EntityLiving user, Entity target) { // OBFHELPER: applyArthropodEnchantments
++        d.a = user;
++        d.b = target;
++        if (user != null) {
++            a(d, user.aQ()); // OBFHELPER: applyEnchantmentModifierArray - getEquipmentAndArmor
+         }
+-
+-        if (entityliving instanceof EntityHuman) {
+-            a(EnchantmentManager.d, entityliving.getItemInMainHand());
++        
++        if (user instanceof EntityHuman) {
++            a(d, user.getItemInMainHand()); // OBFHELPER: applyEnchantmentModifier
+         }
+-
++        
++        // Akarin Start - remove references to entity objects to avoid memory leaks
++        d.a = null;
++        d.b = null;
++        // Akarin end
+     }
+ 
+     public static int a(Enchantment enchantment, EntityLiving entityliving) {
+@@ -374,19 +383,19 @@ public class EnchantmentManager {
+         }
+     }
+ 
+-    public static final class EnchantmentModifierThorns implements EnchantmentManager.EnchantmentModifier { // Akarin - private -> public
++    public static final class EnchantmentModifierc implements EnchantmentManager.EnchantmentModifier { // Akarin - private -> public
+ 
+         public EntityLiving a;
+         public Entity b;
+ 
+-        private EnchantmentModifierThorns() {}
++        private EnchantmentModifierc() {}
+ 
+         @Override
+         public void a(Enchantment enchantment, int i) {
+             enchantment.b(this.a, this.b, i);
+         }
+ 
+-        EnchantmentModifierThorns(Object object) {
++        EnchantmentModifierc(Object object) {
+             this();
+         }
+     }
+-- 
+2.35.1.windows.2
+

@@ -1,0 +1,110 @@
+From dc54b2f5e5095a93ff345fbb77f86c391840c503 Mon Sep 17 00:00:00 2001
+From: Yiyu Si <1486864380@qq.com>
+Date: Fri, 19 Aug 2022 12:56:54 +0800
+Subject: [PATCH] Add ParallelRegistry
+
+
+diff --git a/src/main/java/net/minecraft/server/DispenserRegistry.java b/src/main/java/net/minecraft/server/DispenserRegistry.java
+index be8135f80..4e5b844ee 100644
+--- a/src/main/java/net/minecraft/server/DispenserRegistry.java
++++ b/src/main/java/net/minecraft/server/DispenserRegistry.java
+@@ -17,6 +17,14 @@ import org.bukkit.event.block.BlockDispenseEvent;
+ import org.bukkit.event.world.StructureGrowEvent;
+ // CraftBukkit end
+ 
++//Akarin Start
++import java.util.concurrent.ExecutorService;
++import java.util.concurrent.Executors;
++import java.util.concurrent.TimeUnit;
++
++import io.akarin.api.internal.Akari;
++//Akarin End
++
+ public class DispenserRegistry {
+ 
+     public static final PrintStream a = System.out;
+@@ -24,6 +32,30 @@ public class DispenserRegistry {
+     public static boolean b;
+     private static final Logger d = LogManager.getLogger();
+ 
++    //Akarin Start
++    
++    /**
++     * Registry order: SoundEffect -> Block
++     */
++    
++    private static final ExecutorService STAGE_BLOCK = Executors.newSingleThreadExecutor(Akari.STAGE_FACTORY);
++    
++     /**
++     * Registry order: Item -> PotionBrewer & orderless: BlockFire, BiomeBase (After STAGE_BLOCK)
++     */
++    
++    private static final ExecutorService STAGE_BLOCK_BASE  = Executors.newFixedThreadPool(3, Akari.STAGE_FACTORY);
++    
++    /**
++     * Registry order: MobEffectList -> PotionRegistry & orderless: Enchantment, EntityTypes
++     */
++    
++    private static final ExecutorService STAGE_STANDALONE = Executors.newFixedThreadPool(3, Akari.STAGE_FACTORY);
++    
++    // We should keep the original order in codes thought orderless in runtime
++    
++    //Akarin End
++
+     public static boolean a() {
+         return DispenserRegistry.c;
+     }
+@@ -675,16 +707,40 @@ public class DispenserRegistry {
+         if (!DispenserRegistry.c) {
+             DispenserRegistry.c = true;
+             d();
+-            SoundEffect.b();
+-            Block.w();
+-            BlockFire.e();
+-            MobEffectList.k();
+-            Enchantment.g();
+-            Item.t();
+-            PotionRegistry.b();
+-            PotionBrewer.a();
+-            EntityTypes.c();
+-            BiomeBase.q();
++
++            //Akarin Start
++            
++            STAGE_BLOCK.execute(() -> {
++                SoundEffect.b();
++                Block.w();
++                
++                STAGE_BLOCK_BASE.execute(() -> BlockFire.e()); // This single task only cost ~4ms, however, firing a task only takes ~1ms
++                STAGE_BLOCK_BASE.execute(() -> {
++                    Item.t();
++                    PotionBrewer.a();
++                });
++                STAGE_BLOCK_BASE.execute(() -> BiomeBase.q());
++            });
++
++            STAGE_STANDALONE.execute(() -> Enchantment.g());
++            STAGE_STANDALONE.execute(() -> EntityTypes.c());
++            STAGE_STANDALONE.execute(() -> {
++                MobEffectList.k();
++                PotionRegistry.b();
++            });
++
++            // Shutdown BLOCK and STANDALONE stage
++            STAGE_STANDALONE.shutdown();
++            STAGE_BLOCK.shutdown();
++            STAGE_BLOCK.awaitTermination(10, TimeUnit.MINUTES);
++        
++            STAGE_BLOCK_BASE.shutdown(); // This must after STAGE_BLOCK terminated
++            STAGE_BLOCK_BASE.awaitTermination(20, TimeUnit.MINUTES);
++
++            STAGE_STANDALONE.awaitTermination(30, TimeUnit.MINUTES); // Behind the shutdown of BLOCK_BASE should faster
++            
++            //Akarin End
++
+             b();
+             if (!CraftingManager.init()) {
+                 DispenserRegistry.b = true;
+-- 
+2.35.1.windows.2
+

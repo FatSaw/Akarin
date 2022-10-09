@@ -1,0 +1,29 @@
+From da7879813301408cb977172479c51381ea0ba472 Mon Sep 17 00:00:00 2001
+From: Yiyu Si <1486864380@qq.com>
+Date: Fri, 26 Aug 2022 22:10:24 +0800
+Subject: [PATCH] EnchantTable Optimizations
+
+
+diff --git a/src/main/java/net/minecraft/server/TileEntityEnchantTable.java b/src/main/java/net/minecraft/server/TileEntityEnchantTable.java
+index 2c5ebde7e..f53c4255d 100644
+--- a/src/main/java/net/minecraft/server/TileEntityEnchantTable.java
++++ b/src/main/java/net/minecraft/server/TileEntityEnchantTable.java
+@@ -37,6 +37,7 @@ public class TileEntityEnchantTable extends TileEntity implements ITickable, ITi
+     }
+ 
+     public void e() {
++    /* Akarin - No tickable
+         this.k = this.j;
+         this.m = this.l;
+         EntityHuman entityhuman = this.world.a((double) ((float) this.position.getX() + 0.5F), (double) ((float) this.position.getY() + 0.5F), (double) ((float) this.position.getZ() + 0.5F), 3.0D, false);
+@@ -95,6 +96,7 @@ public class TileEntityEnchantTable extends TileEntity implements ITickable, ITi
+         f2 = MathHelper.a(f2, -0.2F, 0.2F);
+         this.i += (f2 - this.i) * 0.9F;
+         this.f += this.i;
++    */
+     }
+ 
+     public String getName() {
+-- 
+2.35.1.windows.2
+

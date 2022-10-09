@@ -1,0 +1,46 @@
+From acdf2e1ce7c49a2ac5cfdaf6449b655c649c9f36 Mon Sep 17 00:00:00 2001
+From: Yiyu Si <1486864380@qq.com>
+Date: Thu, 1 Sep 2022 18:22:24 +0800
+Subject: [PATCH] Entity realtime fixes
+
+
+diff --git a/src/main/java/net/minecraft/server/Entity.java b/src/main/java/net/minecraft/server/Entity.java
+index 016d1bbc0..9bf82608f 100644
+--- a/src/main/java/net/minecraft/server/Entity.java
++++ b/src/main/java/net/minecraft/server/Entity.java
+@@ -45,6 +45,8 @@ import org.bukkit.event.entity.EntityPortalEvent;
+ import org.bukkit.plugin.PluginManager;
+ // CraftBukkit end
+ 
++import io.akarin.api.internal.mixin.IMixinRealTimeTicking; // Akarin
++
+ /**
+  * Akarin Changes Note
+  * 1) Random -> LightRandom (performance)
+@@ -375,7 +377,11 @@ public abstract class Entity implements ICommandListener, KeyedObject { // Paper
+                     if (!this.isPassenger()) {
+                         int i = this.Z();
+ 
+-                        if (this.al++ >= i) {
++                        // Akarin - fixup portal counter
++                        int ticks = (int) ((IMixinRealTimeTicking) this.world).getRealTimeTicks();
++                        this.al += ticks; // OBFHELPER: portalCounter
++                        
++                        if (this.al >= i) {
+                             this.al = i;
+                             this.portalCooldown = this.aM();
+                             byte b0;
+@@ -415,7 +421,9 @@ public abstract class Entity implements ICommandListener, KeyedObject { // Paper
+         }
+ 
+         if (this.j > 0) {
+-            --this.j;
++            // Akarin - Implement realtime entity ticking
++            int ticks = (int) ((IMixinRealTimeTicking) this.world).getRealTimeTicks();
++            this.j = Math.max(0, this.j - ticks); // OBFHELPER: rideCooldown
+         }
+ 
+         this.I = this.J;
+-- 
+2.35.1.windows.2
+

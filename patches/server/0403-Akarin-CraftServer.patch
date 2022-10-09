@@ -1,0 +1,63 @@
+From d6e58b2d3416f2d7ccf45dd67a79e388a9188ce4 Mon Sep 17 00:00:00 2001
+From: Yiyu Si <1486864380@qq.com>
+Date: Fri, 19 Aug 2022 22:28:33 +0800
+Subject: [PATCH] Akarin CraftServer
+
+
+diff --git a/src/main/java/org/bukkit/craftbukkit/CraftServer.java b/src/main/java/org/bukkit/craftbukkit/CraftServer.java
+index 4ee22cde0..bdc809a0a 100644
+--- a/src/main/java/org/bukkit/craftbukkit/CraftServer.java
++++ b/src/main/java/org/bukkit/craftbukkit/CraftServer.java
+@@ -138,6 +138,9 @@ import net.md_5.bungee.api.chat.BaseComponent;
+ import javax.annotation.Nullable; // Paper
+ import javax.annotation.Nonnull; // Paper
+ 
++import io.akarin.api.internal.Akari; //Akarin
++import io.akarin.server.core.AkarinGlobalConfig; //Akarin
++
+ /**
+  * Akarin Changes Note
+  * 1) Guava -> Caffeine (performance)
+@@ -182,6 +185,8 @@ public final class CraftServer implements Server {
+     private final List<CraftPlayer> playerView;
+     public int reloadCount;
+     public static Exception excessiveVelEx; // Paper - Velocity warnings
++    private boolean needApplyServerName = true; //Akarin
++    private boolean needApplyServerVersion = true; //Akarin
+ 
+     private final class BooleanWrapper {
+         private boolean value = true;
+@@ -403,11 +408,21 @@ public final class CraftServer implements Server {
+ 
+     @Override
+     public String getName() {
++        // We cannot apply the name modification in <init> method,
++        // cause the initializer will be added to the tail
++        if (needApplyServerName) {
++            serverName = AkarinGlobalConfig.serverBrandName.equals(Akari.EMPTY_STRING) ? "Akarin" : AkarinGlobalConfig.serverBrandName;
++            needApplyServerName = false;
++        }
+         return serverName;
+     }
+ 
+     @Override
+     public String getVersion() {
++        if (needApplyServerVersion) {
++            serverVersion = AkarinGlobalConfig.serverBrandName.equals(Akari.EMPTY_STRING) ? serverVersion : serverVersion.replace("Akarin", AkarinGlobalConfig.serverBrandName);
++            needApplyServerVersion = false;
++        }
+         return serverVersion + " (MC: " + console.getVersion() + ")";
+     }
+ 
+@@ -1649,7 +1664,7 @@ public final class CraftServer implements Server {
+ 
+     @Override
+     public boolean isPrimaryThread() {
+-        return Thread.currentThread().equals(console.primaryThread);
++        return Akari.isPrimaryThread();
+     }
+ 
+     @Override
+-- 
+2.35.1.windows.2
+

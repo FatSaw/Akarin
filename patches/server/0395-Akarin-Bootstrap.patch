@@ -1,0 +1,50 @@
+From f482d4d51c076489cc1c35b93a698c9ef8560868 Mon Sep 17 00:00:00 2001
+From: Yiyu Si <1486864380@qq.com>
+Date: Fri, 19 Aug 2022 14:53:24 +0800
+Subject: [PATCH] Akarin Bootstrap
+
+
+diff --git a/src/main/java/org/bukkit/craftbukkit/Main.java b/src/main/java/org/bukkit/craftbukkit/Main.java
+index ae2c51f5d..9baa551a7 100644
+--- a/src/main/java/org/bukkit/craftbukkit/Main.java
++++ b/src/main/java/org/bukkit/craftbukkit/Main.java
+@@ -16,11 +16,17 @@ import joptsimple.OptionSet;
+ import net.minecraft.server.MinecraftServer;
+ import net.minecrell.terminalconsole.TerminalConsoleAppender; // Paper
+ 
++// Akarin Start
++import io.akarin.api.internal.Akari;
++import io.akarin.server.core.AkarinGlobalConfig;
++//Akarin End
++
+ public class Main {
+     public static boolean useJline = true;
+     public static boolean useConsole = true;
+ 
+     public static void main(String[] args) {
++        AkarinGlobalConfig.init(new File("akarin.yml")); //Akarin
+         // Todo: Installation script
+         OptionParser parser = new OptionParser() {
+             {
+@@ -210,15 +216,15 @@ public class Main {
+                     deadline.add(Calendar.DAY_OF_YEAR, -14);
+                     if (buildDate.before(deadline.getTime())) {
+                         // Paper start - This is some stupid bullshit
+-                        System.err.println("*** Warning, you've not updated in a while! ***");
+-                        System.err.println("*** Please download a new build as per instructions from https://paperci.emc.gs/ ***"); // Paper
++                        Akari.logger.warn("You've not updated in a while, the current version may outdated"); //Akarin
++                        Akari.logger.warn("Visit our website for latest information https://akarin.io/"); //Akarin
+                         //System.err.println("*** Server will start in 15 seconds ***");
+                         //Thread.sleep(TimeUnit.SECONDS.toMillis(15));
+                         // Paper End
+                     }
+                 }
+ 
+-                System.out.println("Loading libraries, please wait...");
++                Akari.logger.info("Loading libraries as parallel capable.."); //Akarin
+                 MinecraftServer.main(options);
+             } catch (Throwable t) {
+                 t.printStackTrace();
+-- 
+2.35.1.windows.2
+

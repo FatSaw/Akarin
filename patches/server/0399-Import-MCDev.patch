@@ -1,0 +1,218 @@
+From afcdf283308d81a99bf80572424ceae2e3577108 Mon Sep 17 00:00:00 2001
+From: Yiyu Si <1486864380@qq.com>
+Date: Fri, 19 Aug 2022 19:59:39 +0800
+Subject: [PATCH] Import MCDev
+
+
+diff --git a/src/main/java/net/minecraft/server/CommandBan.java b/src/main/java/net/minecraft/server/CommandBan.java
+new file mode 100644
+index 000000000..82942ca87
+--- /dev/null
++++ b/src/main/java/net/minecraft/server/CommandBan.java
+@@ -0,0 +1,61 @@
++package net.minecraft.server;
++
++import com.mojang.authlib.GameProfile;
++import java.util.Collections;
++import java.util.Date;
++import java.util.List;
++import javax.annotation.Nullable;
++
++public class CommandBan extends CommandAbstract {
++
++    public CommandBan() {}
++
++    public String getCommand() {
++        return "ban";
++    }
++
++    public int a() {
++        return 3;
++    }
++
++    public String getUsage(ICommandListener icommandlistener) {
++        return "commands.ban.usage";
++    }
++
++    public boolean canUse(MinecraftServer minecraftserver, ICommandListener icommandlistener) {
++        return minecraftserver.getPlayerList().getProfileBans().isEnabled() && super.canUse(minecraftserver, icommandlistener);
++    }
++
++    public void execute(MinecraftServer minecraftserver, ICommandListener icommandlistener, String[] astring) throws CommandException {
++        if (astring.length >= 1 && astring[0].length() > 0) {
++            GameProfile gameprofile = minecraftserver.getUserCache().getProfile(astring[0]);
++
++            if (gameprofile == null) {
++                throw new CommandException("commands.ban.failed", new Object[] { astring[0]});
++            } else {
++                String s = null;
++
++                if (astring.length >= 2) {
++                    s = a(icommandlistener, astring, 1).toPlainText();
++                }
++
++                GameProfileBanEntry gameprofilebanentry = new GameProfileBanEntry(gameprofile, (Date) null, icommandlistener.getName(), (Date) null, s);
++
++                minecraftserver.getPlayerList().getProfileBans().add(gameprofilebanentry);
++                EntityPlayer entityplayer = minecraftserver.getPlayerList().getPlayer(astring[0]);
++
++                if (entityplayer != null) {
++                    entityplayer.playerConnection.disconnect(new ChatMessage("multiplayer.disconnect.banned", new Object[0]));
++                }
++
++                a(icommandlistener, (ICommand) this, "commands.ban.success", new Object[] { astring[0]});
++            }
++        } else {
++            throw new ExceptionUsage("commands.ban.usage", new Object[0]);
++        }
++    }
++
++    public List<String> tabComplete(MinecraftServer minecraftserver, ICommandListener icommandlistener, String[] astring, @Nullable BlockPosition blockposition) {
++        return astring.length >= 1 ? a(astring, minecraftserver.getPlayers()) : Collections.emptyList();
++    }
++}
+diff --git a/src/main/java/net/minecraft/server/CommandBanIp.java b/src/main/java/net/minecraft/server/CommandBanIp.java
+new file mode 100644
+index 000000000..e0372a462
+--- /dev/null
++++ b/src/main/java/net/minecraft/server/CommandBanIp.java
+@@ -0,0 +1,81 @@
++package net.minecraft.server;
++
++import java.util.Collections;
++import java.util.Date;
++import java.util.Iterator;
++import java.util.List;
++import java.util.regex.Matcher;
++import java.util.regex.Pattern;
++import javax.annotation.Nullable;
++
++public class CommandBanIp extends CommandAbstract {
++
++    public static final Pattern a = Pattern.compile("^([01]?\\d\\d?|2[0-4]\\d|25[0-5])\\.([01]?\\d\\d?|2[0-4]\\d|25[0-5])\\.([01]?\\d\\d?|2[0-4]\\d|25[0-5])\\.([01]?\\d\\d?|2[0-4]\\d|25[0-5])$");
++
++    public CommandBanIp() {}
++
++    public String getCommand() {
++        return "ban-ip";
++    }
++
++    public int a() {
++        return 3;
++    }
++
++    public boolean canUse(MinecraftServer minecraftserver, ICommandListener icommandlistener) {
++        return minecraftserver.getPlayerList().getIPBans().isEnabled() && super.canUse(minecraftserver, icommandlistener);
++    }
++
++    public String getUsage(ICommandListener icommandlistener) {
++        return "commands.banip.usage";
++    }
++
++    public void execute(MinecraftServer minecraftserver, ICommandListener icommandlistener, String[] astring) throws CommandException {
++        if (astring.length >= 1 && astring[0].length() > 1) {
++            IChatBaseComponent ichatbasecomponent = astring.length >= 2 ? a(icommandlistener, astring, 1) : null;
++            Matcher matcher = CommandBanIp.a.matcher(astring[0]);
++
++            if (matcher.matches()) {
++                this.a(minecraftserver, icommandlistener, astring[0], ichatbasecomponent == null ? null : ichatbasecomponent.toPlainText());
++            } else {
++                EntityPlayer entityplayer = minecraftserver.getPlayerList().getPlayer(astring[0]);
++
++                if (entityplayer == null) {
++                    throw new ExceptionPlayerNotFound("commands.banip.invalid");
++                }
++
++                this.a(minecraftserver, icommandlistener, entityplayer.A(), ichatbasecomponent == null ? null : ichatbasecomponent.toPlainText());
++            }
++
++        } else {
++            throw new ExceptionUsage("commands.banip.usage", new Object[0]);
++        }
++    }
++
++    public List<String> tabComplete(MinecraftServer minecraftserver, ICommandListener icommandlistener, String[] astring, @Nullable BlockPosition blockposition) {
++        return astring.length == 1 ? a(astring, minecraftserver.getPlayers()) : Collections.emptyList();
++    }
++
++    protected void a(MinecraftServer minecraftserver, ICommandListener icommandlistener, String s, @Nullable String s1) {
++        IpBanEntry ipbanentry = new IpBanEntry(s, (Date) null, icommandlistener.getName(), (Date) null, s1);
++
++        minecraftserver.getPlayerList().getIPBans().add(ipbanentry);
++        List list = minecraftserver.getPlayerList().b(s);
++        String[] astring = new String[list.size()];
++        int i = 0;
++
++        EntityPlayer entityplayer;
++
++        for (Iterator iterator = list.iterator(); iterator.hasNext(); astring[i++] = entityplayer.getName()) {
++            entityplayer = (EntityPlayer) iterator.next();
++            entityplayer.playerConnection.disconnect(new ChatMessage("multiplayer.disconnect.ip_banned", new Object[0]));
++        }
++
++        if (list.isEmpty()) {
++            a(icommandlistener, (ICommand) this, "commands.banip.success", new Object[] { s});
++        } else {
++            a(icommandlistener, (ICommand) this, "commands.banip.success.players", new Object[] { s, a((Object[]) astring)});
++        }
++
++    }
++}
+diff --git a/src/main/java/net/minecraft/server/CommandKick.java b/src/main/java/net/minecraft/server/CommandKick.java
+new file mode 100644
+index 000000000..d85ae4bdb
+--- /dev/null
++++ b/src/main/java/net/minecraft/server/CommandKick.java
+@@ -0,0 +1,49 @@
++package net.minecraft.server;
++
++import java.util.Collections;
++import java.util.List;
++import javax.annotation.Nullable;
++
++public class CommandKick extends CommandAbstract {
++
++    public CommandKick() {}
++
++    public String getCommand() {
++        return "kick";
++    }
++
++    public int a() {
++        return 3;
++    }
++
++    public String getUsage(ICommandListener icommandlistener) {
++        return "commands.kick.usage";
++    }
++
++    public void execute(MinecraftServer minecraftserver, ICommandListener icommandlistener, String[] astring) throws CommandException {
++        if (astring.length > 0 && astring[0].length() > 1) {
++            EntityPlayer entityplayer = minecraftserver.getPlayerList().getPlayer(astring[0]);
++
++            if (entityplayer == null) {
++                throw new ExceptionPlayerNotFound("commands.generic.player.notFound", new Object[] { astring[0]});
++            } else {
++                if (astring.length >= 2) {
++                    IChatBaseComponent ichatbasecomponent = a(icommandlistener, astring, 1);
++
++                    entityplayer.playerConnection.disconnect(ichatbasecomponent);
++                    a(icommandlistener, (ICommand) this, "commands.kick.success.reason", new Object[] { entityplayer.getName(), ichatbasecomponent.toPlainText()});
++                } else {
++                    entityplayer.playerConnection.disconnect(new ChatMessage("multiplayer.disconnect.kicked", new Object[0]));
++                    a(icommandlistener, (ICommand) this, "commands.kick.success", new Object[] { entityplayer.getName()});
++                }
++
++            }
++        } else {
++            throw new ExceptionUsage("commands.kick.usage", new Object[0]);
++        }
++    }
++
++    public List<String> tabComplete(MinecraftServer minecraftserver, ICommandListener icommandlistener, String[] astring, @Nullable BlockPosition blockposition) {
++        return astring.length >= 1 ? a(astring, minecraftserver.getPlayers()) : Collections.emptyList();
++    }
++}
+-- 
+2.35.1.windows.2
+

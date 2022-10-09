@@ -1,0 +1,48 @@
+From 5c8914c77910121564fe52c2275865510d2da0ba Mon Sep 17 00:00:00 2001
+From: Yiyu Si <1486864380@qq.com>
+Date: Fri, 19 Aug 2022 14:57:30 +0800
+Subject: [PATCH] Akarin AsyncCatcher
+
+
+diff --git a/src/main/java/org/spigotmc/AsyncCatcher.java b/src/main/java/org/spigotmc/AsyncCatcher.java
+index e44c23016..a987cf3fb 100644
+--- a/src/main/java/org/spigotmc/AsyncCatcher.java
++++ b/src/main/java/org/spigotmc/AsyncCatcher.java
+@@ -1,6 +1,10 @@
+ package org.spigotmc;
+ 
+ import net.minecraft.server.MinecraftServer;
++//Akarin Start
++import io.akarin.api.internal.Akari;
++import io.akarin.server.core.AkarinGlobalConfig;
++//Akarin End
+ 
+ public class AsyncCatcher
+ {
+@@ -8,11 +12,18 @@ public class AsyncCatcher
+     public static boolean enabled = true;
+     public static boolean shuttingDown = false; // Paper
+ 
+-    public static void catchOp(String reason)
+-    {
+-        if ( enabled && Thread.currentThread() != MinecraftServer.getServer().primaryThread )
+-        {
+-            throw new IllegalStateException( "Asynchronous " + reason + "!" );
++    //Akarin Start
++    public static void catchOp(String reason) {
++        if (enabled) {
++            if (Akari.isPrimaryThread()) return;
++            
++            if (AkarinGlobalConfig.throwOnAsyncCaught) {
++                throw new IllegalStateException("Asynchronous " + reason + "!");
++            } else {
++                Akari.logger.warn("Asynchronous " + reason + "!");
++                Thread.dumpStack();
++            }
+         }
+     }
++    //Akarin End
+ }
+-- 
+2.35.1.windows.2
+

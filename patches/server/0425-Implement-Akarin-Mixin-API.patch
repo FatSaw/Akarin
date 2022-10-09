@@ -1,0 +1,61 @@
+From da87efb8c3406454cee38a6da7a8767f7ee5d48b Mon Sep 17 00:00:00 2001
+From: Yiyu Si <1486864380@qq.com>
+Date: Thu, 1 Sep 2022 19:32:33 +0800
+Subject: [PATCH] Implement Akarin Mixin API
+
+
+diff --git a/src/main/java/io/akarin/api/internal/mixin/IMixinRealTimeTicking.java b/src/main/java/io/akarin/api/internal/mixin/IMixinRealTimeTicking.java
+new file mode 100644
+index 000000000..24fcdd905
+--- /dev/null
++++ b/src/main/java/io/akarin/api/internal/mixin/IMixinRealTimeTicking.java
+@@ -0,0 +1,30 @@
++/*
++ * This file is part of Sponge, licensed under the MIT License (MIT).
++ *
++ * Copyright (c) SpongePowered <https://www.spongepowered.org>
++ * Copyright (c) contributors
++ *
++ * Permission is hereby granted, free of charge, to any person obtaining a copy
++ * of this software and associated documentation files (the "Software"), to deal
++ * in the Software without restriction, including without limitation the rights
++ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
++ * copies of the Software, and to permit persons to whom the Software is
++ * furnished to do so, subject to the following conditions:
++ *
++ * The above copyright notice and this permission notice shall be included in
++ * all copies or substantial portions of the Software.
++ *
++ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
++ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
++ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
++ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
++ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
++ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
++ * THE SOFTWARE.
++ */
++package io.akarin.api.internal.mixin;
++
++public interface IMixinRealTimeTicking {
++
++    long getRealTimeTicks();
++}
+\ No newline at end of file
+diff --git a/src/main/java/io/akarin/api/internal/mixin/IMixinWorldServer.java b/src/main/java/io/akarin/api/internal/mixin/IMixinWorldServer.java
+new file mode 100644
+index 000000000..db7c0ac07
+--- /dev/null
++++ b/src/main/java/io/akarin/api/internal/mixin/IMixinWorldServer.java
+@@ -0,0 +1,8 @@
++package io.akarin.api.internal.mixin;
++
++import java.util.Random;
++
++public interface IMixinWorldServer {
++    public Object lock();
++    public Random rand();
++}
+\ No newline at end of file
+-- 
+2.35.1.windows.2
+

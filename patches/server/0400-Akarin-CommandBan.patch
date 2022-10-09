@@ -1,0 +1,88 @@
+From 77bb938c202fdeb8fbe5e4a036341d17eca68266 Mon Sep 17 00:00:00 2001
+From: Yiyu Si <1486864380@qq.com>
+Date: Fri, 19 Aug 2022 20:08:45 +0800
+Subject: [PATCH] Akarin CommandBan
+
+
+diff --git a/src/main/java/net/minecraft/server/CommandBan.java b/src/main/java/net/minecraft/server/CommandBan.java
+index 82942ca87..b8d66f2a8 100644
+--- a/src/main/java/net/minecraft/server/CommandBan.java
++++ b/src/main/java/net/minecraft/server/CommandBan.java
+@@ -5,6 +5,10 @@ import java.util.Collections;
+ import java.util.Date;
+ import java.util.List;
+ import javax.annotation.Nullable;
++//Akarin Start
++import io.akarin.api.internal.Akari;
++import io.akarin.server.core.AkarinGlobalConfig;
++//Akarin End
+ 
+ public class CommandBan extends CommandAbstract {
+ 
+@@ -26,34 +30,44 @@ public class CommandBan extends CommandAbstract {
+         return minecraftserver.getPlayerList().getProfileBans().isEnabled() && super.canUse(minecraftserver, icommandlistener);
+     }
+ 
+-    public void execute(MinecraftServer minecraftserver, ICommandListener icommandlistener, String[] astring) throws CommandException {
+-        if (astring.length >= 1 && astring[0].length() > 0) {
+-            GameProfile gameprofile = minecraftserver.getUserCache().getProfile(astring[0]);
++    //Akarin Start
++    public void execute(MinecraftServer server, ICommandListener sender, String[] args) throws CommandException {
++        if (args.length >= 1 && args[0].length() > 1) {
++            GameProfile profile = server.getUserCache().getProfile(args[0]);
+ 
+-            if (gameprofile == null) {
+-                throw new CommandException("commands.ban.failed", new Object[] { astring[0]});
++            if (profile == null) {
++                throw new CommandException("commands.ban.failed", new Object[] {args[0]});
+             } else {
+-                String s = null;
+-
+-                if (astring.length >= 2) {
+-                    s = a(icommandlistener, astring, 1).toPlainText();
++                // Akarin start - use string
++                boolean hasReason = true; // Akarin
++                String message = null;
++                if (args.length >= 2) {
++                    message = "";
++                    for (int i = 2; i < args.length; i++) {
++                        message = message + args[i];
++                    }
++                } else {
++                    hasReason = false; // Akarin
++                    message = Akari.EMPTY_STRING; // Akarin - modify message
+                 }
+-
+-                GameProfileBanEntry gameprofilebanentry = new GameProfileBanEntry(gameprofile, (Date) null, icommandlistener.getName(), (Date) null, s);
+-
+-                minecraftserver.getPlayerList().getProfileBans().add(gameprofilebanentry);
+-                EntityPlayer entityplayer = minecraftserver.getPlayerList().getPlayer(astring[0]);
+-
++                // Akarin end
++                
++                GameProfileBanEntry entry = new GameProfileBanEntry(profile, (Date) null, sender.getName(), (Date) null, message);
++                
++                server.getPlayerList().getProfileBans().add(entry);
++                EntityPlayer entityplayer = server.getPlayerList().getPlayer(args[0]);
++                
+                 if (entityplayer != null) {
+-                    entityplayer.playerConnection.disconnect(new ChatMessage("multiplayer.disconnect.banned", new Object[0]));
++                    entityplayer.playerConnection.disconnect(hasReason ? message : AkarinGlobalConfig.messageBan);
+                 }
+-
+-                a(icommandlistener, (ICommand) this, "commands.ban.success", new Object[] { astring[0]});
++                
++                CommandAbstract.a(sender, (ICommand) this, "commands.ban.success", args[0]); // OBFHELPER: notifyCommandListener
+             }
+         } else {
+-            throw new ExceptionUsage("commands.ban.usage", new Object[0]);
++            throw new ExceptionUsage("commands.ban.usage");
+         }
+     }
++    //Akarin End
+ 
+     public List<String> tabComplete(MinecraftServer minecraftserver, ICommandListener icommandlistener, String[] astring, @Nullable BlockPosition blockposition) {
+         return astring.length >= 1 ? a(astring, minecraftserver.getPlayers()) : Collections.emptyList();
+-- 
+2.35.1.windows.2
+

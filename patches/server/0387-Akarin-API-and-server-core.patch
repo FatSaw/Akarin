@@ -1,0 +1,4322 @@
+From 64900d4e0d167a9a04479417becfbc3136aa093c Mon Sep 17 00:00:00 2001
+From: Yiyu Si <1486864380@qq.com>
+Date: Thu, 18 Aug 2022 19:20:49 +0800
+Subject: [PATCH] Akarin API and server core
+
+
+diff --git a/src/main/java/io/akarin/api/internal/Akari.java b/src/main/java/io/akarin/api/internal/Akari.java
+new file mode 100644
+index 000000000..95fec5cc8
+--- /dev/null
++++ b/src/main/java/io/akarin/api/internal/Akari.java
+@@ -0,0 +1,161 @@
++package io.akarin.api.internal;
++
++import java.lang.reflect.Field;
++import java.lang.reflect.Method;
++import java.util.Queue;
++import java.util.concurrent.ExecutorCompletionService;
++import java.util.concurrent.LinkedBlockingQueue;
++import java.util.concurrent.ThreadFactory;
++import java.util.concurrent.TimeUnit;
++import java.util.concurrent.locks.ReentrantLock;
++
++import org.apache.commons.lang3.StringUtils;
++import org.apache.logging.log4j.LogManager;
++import org.apache.logging.log4j.Logger;
++import com.google.common.collect.Queues;
++import com.google.common.util.concurrent.ThreadFactoryBuilder;
++
++import co.aikar.timings.Timing;
++import co.aikar.timings.Timings;
++import io.akarin.api.internal.Akari.AssignableFactory;
++import io.akarin.api.internal.Akari.TimingSignal;
++import io.akarin.api.internal.utils.ReentrantSpinningLock;
++import io.akarin.api.internal.utils.thread.SuspendableExecutorCompletionService;
++import io.akarin.api.internal.utils.thread.SuspendableThreadPoolExecutor;
++import io.akarin.server.core.AkarinGlobalConfig;
++import net.minecraft.server.MinecraftServer;
++import net.minecraft.server.World;
++import net.minecraft.server.WorldServer;
++
++@SuppressWarnings("restriction")
++public abstract class Akari {
++    /**
++     * A common logger used by mixin classes
++     */
++    public final static Logger logger = LogManager.getLogger("Akarin");
++    
++    /**
++     * A common thread pool factory
++     */
++    public static final ThreadFactory STAGE_FACTORY = new ThreadFactoryBuilder().setNameFormat("Akarin Parallel Registry Thread - %1$d").build();
++    
++    /**
++     * Main thread callback tasks
++     */
++    public static final Queue<Runnable> callbackQueue = Queues.newConcurrentLinkedQueue();
++    
++    public static class AssignableThread extends Thread {
++        public AssignableThread(Runnable run) {
++            super(run);
++        }
++        public AssignableThread() {
++            super();
++        }
++    }
++    
++    public static class AssignableFactory implements ThreadFactory {
++        private final String threadName;
++        private int threadNumber;
++        
++        public AssignableFactory(String name) {
++            threadName = name;
++        }
++        
++        @Override
++        public Thread newThread(Runnable run) {
++            Thread thread = new AssignableThread(run);
++            thread.setName(StringUtils.replaceChars(threadName, "$", String.valueOf(threadNumber++)));
++            thread.setPriority(AkarinGlobalConfig.primaryThreadPriority); // Fair
++            return thread;
++        }
++    }
++    
++    public static class TimingSignal {
++        public final World tickedWorld;
++        public final boolean isEntities;
++        
++        public TimingSignal(World world, boolean entities) {
++            tickedWorld = world;
++            isEntities = entities;
++        }
++    }
++    
++    public static SuspendableExecutorCompletionService<TimingSignal> STAGE_TICK;
++    
++    static {
++        resizeTickExecutors(3);
++    }
++    
++    public static void resizeTickExecutors(int worlds) {
++        int parallelism;
++        switch (AkarinGlobalConfig.parallelMode) {
++            case -1:
++                return;
++            case 0:
++                parallelism = 2;
++                break;
++            case 1:
++                parallelism = worlds + 1;
++                break;
++            case 2:
++            default:
++                parallelism = worlds * 2;
++                break;
++        }
++        STAGE_TICK = new SuspendableExecutorCompletionService<>(new SuspendableThreadPoolExecutor(parallelism, parallelism,
++                0L, TimeUnit.MILLISECONDS,
++                new LinkedBlockingQueue<Runnable>(),
++                new AssignableFactory("Akarin Parallel Ticking Thread - $")));
++    }
++    
++    public static boolean isPrimaryThread() {
++        return isPrimaryThread(true);
++    }
++    
++    public static boolean isPrimaryThread(boolean assign) {
++        Thread current = Thread.currentThread();
++        return current == MinecraftServer.getServer().primaryThread || (assign ? (current.getClass() == AssignableThread.class) : false);
++    }
++    
++    public static final String EMPTY_STRING = "";
++    
++    /*
++     * The unsafe
++     */
++    public final static sun.misc.Unsafe UNSAFE = getUnsafe();
++    
++    private static sun.misc.Unsafe getUnsafe() {
++        try {
++            Field theUnsafe = sun.misc.Unsafe.class.getDeclaredField("theUnsafe");
++            theUnsafe.setAccessible(true);
++            return (sun.misc.Unsafe) theUnsafe.get(null);
++        } catch (Throwable t) {
++            t.printStackTrace();
++            return null;
++        }
++    }
++    
++    private static final String serverVersion = Akari.class.getPackage().getImplementationVersion();
++    
++    public static String getServerVersion() {
++        return serverVersion + " (MC: " + MinecraftServer.getServer().getVersion() + ")";
++    }
++    
++    /*
++     * Timings
++     */
++    public final static Timing worldTiming = getTiming("Akarin - Full World Tick");
++    
++    public final static Timing callbackTiming = getTiming("Akarin - Callback Queue");
++    
++    private static Timing getTiming(String name) {
++        try {
++            Method ofSafe = Timings.class.getDeclaredMethod("ofSafe", String.class);
++            ofSafe.setAccessible(true);
++            return (Timing) ofSafe.invoke(null, name);
++        } catch (Throwable t) {
++            t.printStackTrace();
++            return null;
++        }
++    }
++}
+diff --git a/src/main/java/io/akarin/api/internal/LocalAddress.java b/src/main/java/io/akarin/api/internal/LocalAddress.java
+new file mode 100644
+index 000000000..93adeec76
+--- /dev/null
++++ b/src/main/java/io/akarin/api/internal/LocalAddress.java
+@@ -0,0 +1,28 @@
++package io.akarin.api.internal;
++
++import java.net.InetAddress;
++
++import javax.annotation.concurrent.Immutable;
++
++@Immutable
++public class LocalAddress {
++    private final InetAddress host;
++    private final int port;
++    
++    public static LocalAddress create(InetAddress localHost, int localPort) {
++        return new LocalAddress(localHost, localPort);
++    }
++    
++    public LocalAddress(InetAddress localHost, int localPort) {
++        host = localHost;
++        port = localPort;
++    }
++    
++    public InetAddress host() {
++        return host;
++    }
++    
++    public int port() {
++        return port;
++    }
++}
+diff --git a/src/main/java/io/akarin/api/internal/utils/CheckedConcurrentLinkedQueue.java b/src/main/java/io/akarin/api/internal/utils/CheckedConcurrentLinkedQueue.java
+new file mode 100644
+index 000000000..976f7cb67
+--- /dev/null
++++ b/src/main/java/io/akarin/api/internal/utils/CheckedConcurrentLinkedQueue.java
+@@ -0,0 +1,997 @@
++/*
++ * ORACLE PROPRIETARY/CONFIDENTIAL. Use is subject to license terms.
++ *
++ *
++ *
++ *
++ *
++ *
++ *
++ *
++ *
++ *
++ *
++ *
++ *
++ *
++ *
++ *
++ *
++ *
++ *
++ *
++ */
++
++/*
++ *
++ *
++ *
++ *
++ *
++ * Written by Doug Lea and Martin Buchholz with assistance from members of
++ * JCP JSR-166 Expert Group and released to the public domain, as explained
++ * at http://creativecommons.org/publicdomain/zero/1.0/
++ */
++
++package io.akarin.api.internal.utils;
++
++import java.util.AbstractQueue;
++import java.util.ArrayList;
++import java.util.Collection;
++import java.util.Iterator;
++import java.util.NoSuchElementException;
++import java.util.Queue;
++import java.util.Spliterator;
++import java.util.Spliterators;
++import java.util.function.Consumer;
++
++import io.akarin.api.internal.Akari;
++
++/**
++ * An unbounded thread-safe {@linkplain Queue queue} based on linked nodes.
++ * This queue orders elements FIFO (first-in-first-out).
++ * The <em>head</em> of the queue is that element that has been on the
++ * queue the longest time.
++ * The <em>tail</em> of the queue is that element that has been on the
++ * queue the shortest time. New elements
++ * are inserted at the tail of the queue, and the queue retrieval
++ * operations obtain elements at the head of the queue.
++ * A {@code ConcurrentLinkedQueue} is an appropriate choice when
++ * many threads will share access to a common collection.
++ * Like most other concurrent collection implementations, this class
++ * does not permit the use of {@code null} elements.
++ *
++ * <p>This implementation employs an efficient <em>non-blocking</em>
++ * algorithm based on one described in <a
++ * href="http://www.cs.rochester.edu/u/michael/PODC96.html"> Simple,
++ * Fast, and Practical Non-Blocking and Blocking Concurrent Queue
++ * Algorithms</a> by Maged M. Michael and Michael L. Scott.
++ *
++ * <p>Iterators are <i>weakly consistent</i>, returning elements
++ * reflecting the state of the queue at some point at or since the
++ * creation of the iterator.  They do <em>not</em> throw {@link
++ * java.util.ConcurrentModificationException}, and may proceed concurrently
++ * with other operations.  Elements contained in the queue since the creation
++ * of the iterator will be returned exactly once.
++ *
++ * <p>Beware that, unlike in most collections, the {@code size} method
++ * is <em>NOT</em> a constant-time operation. Because of the
++ * asynchronous nature of these queues, determining the current number
++ * of elements requires a traversal of the elements, and so may report
++ * inaccurate results if this collection is modified during traversal.
++ * Additionally, the bulk operations {@code addAll},
++ * {@code removeAll}, {@code retainAll}, {@code containsAll},
++ * {@code equals}, and {@code toArray} are <em>not</em> guaranteed
++ * to be performed atomically. For example, an iterator operating
++ * concurrently with an {@code addAll} operation might view only some
++ * of the added elements.
++ *
++ * <p>This class and its iterator implement all of the <em>optional</em>
++ * methods of the {@link Queue} and {@link Iterator} interfaces.
++ *
++ * <p>Memory consistency effects: As with other concurrent
++ * collections, actions in a thread prior to placing an object into a
++ * {@code ConcurrentLinkedQueue}
++ * <a href="package-summary.html#MemoryVisibility"><i>happen-before</i></a>
++ * actions subsequent to the access or removal of that element from
++ * the {@code ConcurrentLinkedQueue} in another thread.
++ *
++ * <p>This class is a member of the
++ * <a href="{@docRoot}/../technotes/guides/collections/index.html">
++ * Java Collections Framework</a>.
++ *
++ * @since 1.5
++ * @author Doug Lea
++ * @param <E> the type of elements held in this collection
++ */
++public class CheckedConcurrentLinkedQueue<E> extends AbstractQueue<E>
++        implements Queue<E>, java.io.Serializable {
++    private static final long serialVersionUID = 196745693267521676L;
++    
++    public E poll(com.google.common.base.Predicate<E> predicate, E singalInstance) {
++        restartFromHead:
++        for (;;) {
++            for (Node<E> h = head, p = h, q;;) {
++                E item = p.item;
++                
++                if (predicate.apply(item)) return singalInstance; // Test predicate
++
++                if (item != null && p.casItem(item, null)) {
++                    // Successful CAS is the linearization point
++                    // for item to be removed from this queue.
++                    if (p != h) // hop two nodes at a time
++                        updateHead(h, ((q = p.next) != null) ? q : p);
++                    return item;
++                }
++                else if ((q = p.next) == null) {
++                    updateHead(h, p);
++                    return null;
++                }
++                else if (p == q)
++                    continue restartFromHead;
++                else
++                    p = q;
++            }
++        }
++    }
++
++    /*
++     * This is a modification of the Michael & Scott algorithm,
++     * adapted for a garbage-collected environment, with support for
++     * interior node deletion (to support remove(Object)).  For
++     * explanation, read the paper.
++     *
++     * Note that like most non-blocking algorithms in this package,
++     * this implementation relies on the fact that in garbage
++     * collected systems, there is no possibility of ABA problems due
++     * to recycled nodes, so there is no need to use "counted
++     * pointers" or related techniques seen in versions used in
++     * non-GC'ed settings.
++     *
++     * The fundamental invariants are:
++     * - There is exactly one (last) Node with a null next reference,
++     *   which is CASed when enqueueing.  This last Node can be
++     *   reached in O(1) time from tail, but tail is merely an
++     *   optimization - it can always be reached in O(N) time from
++     *   head as well.
++     * - The elements contained in the queue are the non-null items in
++     *   Nodes that are reachable from head.  CASing the item
++     *   reference of a Node to null atomically removes it from the
++     *   queue.  Reachability of all elements from head must remain
++     *   true even in the case of concurrent modifications that cause
++     *   head to advance.  A dequeued Node may remain in use
++     *   indefinitely due to creation of an Iterator or simply a
++     *   poll() that has lost its time slice.
++     *
++     * The above might appear to imply that all Nodes are GC-reachable
++     * from a predecessor dequeued Node.  That would cause two problems:
++     * - allow a rogue Iterator to cause unbounded memory retention
++     * - cause cross-generational linking of old Nodes to new Nodes if
++     *   a Node was tenured while live, which generational GCs have a
++     *   hard time dealing with, causing repeated major collections.
++     * However, only non-deleted Nodes need to be reachable from
++     * dequeued Nodes, and reachability does not necessarily have to
++     * be of the kind understood by the GC.  We use the trick of
++     * linking a Node that has just been dequeued to itself.  Such a
++     * self-link implicitly means to advance to head.
++     *
++     * Both head and tail are permitted to lag.  In fact, failing to
++     * update them every time one could is a significant optimization
++     * (fewer CASes). As with LinkedTransferQueue (see the internal
++     * documentation for that class), we use a slack threshold of two;
++     * that is, we update head/tail when the current pointer appears
++     * to be two or more steps away from the first/last node.
++     *
++     * Since head and tail are updated concurrently and independently,
++     * it is possible for tail to lag behind head (why not)?
++     *
++     * CASing a Node's item reference to null atomically removes the
++     * element from the queue.  Iterators skip over Nodes with null
++     * items.  Prior implementations of this class had a race between
++     * poll() and remove(Object) where the same element would appear
++     * to be successfully removed by two concurrent operations.  The
++     * method remove(Object) also lazily unlinks deleted Nodes, but
++     * this is merely an optimization.
++     *
++     * When constructing a Node (before enqueuing it) we avoid paying
++     * for a volatile write to item by using Unsafe.putObject instead
++     * of a normal write.  This allows the cost of enqueue to be
++     * "one-and-a-half" CASes.
++     *
++     * Both head and tail may or may not point to a Node with a
++     * non-null item.  If the queue is empty, all items must of course
++     * be null.  Upon creation, both head and tail refer to a dummy
++     * Node with null item.  Both head and tail are only updated using
++     * CAS, so they never regress, although again this is merely an
++     * optimization.
++     */
++
++    private static class Node<E> {
++        volatile E item;
++        volatile Node<E> next;
++
++        /**
++         * Constructs a new node.  Uses relaxed write because item can
++         * only be seen after publication via casNext.
++         */
++        Node(E item) {
++            UNSAFE.putObject(this, itemOffset, item);
++        }
++
++        boolean casItem(E cmp, E val) {
++            return UNSAFE.compareAndSwapObject(this, itemOffset, cmp, val);
++        }
++
++        void lazySetNext(Node<E> val) {
++            UNSAFE.putOrderedObject(this, nextOffset, val);
++        }
++
++        boolean casNext(Node<E> cmp, Node<E> val) {
++            return UNSAFE.compareAndSwapObject(this, nextOffset, cmp, val);
++        }
++
++        // Unsafe mechanics
++
++        private static final sun.misc.Unsafe UNSAFE;
++        private static final long itemOffset;
++        private static final long nextOffset;
++
++        static {
++            try {
++                UNSAFE = Akari.UNSAFE;
++                Class<?> k = Node.class;
++                itemOffset = UNSAFE.objectFieldOffset
++                    (k.getDeclaredField("item"));
++                nextOffset = UNSAFE.objectFieldOffset
++                    (k.getDeclaredField("next"));
++            } catch (Exception e) {
++                throw new Error(e);
++            }
++        }
++    }
++
++    /**
++     * A node from which the first live (non-deleted) node (if any)
++     * can be reached in O(1) time.
++     * Invariants:
++     * - all live nodes are reachable from head via succ()
++     * - head != null
++     * - (tmp = head).next != tmp || tmp != head
++     * Non-invariants:
++     * - head.item may or may not be null.
++     * - it is permitted for tail to lag behind head, that is, for tail
++     *   to not be reachable from head!
++     */
++    private transient volatile Node<E> head;
++
++    /**
++     * A node from which the last node on list (that is, the unique
++     * node with node.next == null) can be reached in O(1) time.
++     * Invariants:
++     * - the last node is always reachable from tail via succ()
++     * - tail != null
++     * Non-invariants:
++     * - tail.item may or may not be null.
++     * - it is permitted for tail to lag behind head, that is, for tail
++     *   to not be reachable from head!
++     * - tail.next may or may not be self-pointing to tail.
++     */
++    private transient volatile Node<E> tail;
++
++    /**
++     * Creates a {@code ConcurrentLinkedQueue} that is initially empty.
++     */
++    public CheckedConcurrentLinkedQueue() {
++        head = tail = new Node<E>(null);
++    }
++
++    /**
++     * Creates a {@code ConcurrentLinkedQueue}
++     * initially containing the elements of the given collection,
++     * added in traversal order of the collection's iterator.
++     *
++     * @param c the collection of elements to initially contain
++     * @throws NullPointerException if the specified collection or any
++     *         of its elements are null
++     */
++    public CheckedConcurrentLinkedQueue(Collection<? extends E> c) {
++        Node<E> h = null, t = null;
++        for (E e : c) {
++            checkNotNull(e);
++            Node<E> newNode = new Node<E>(e);
++            if (h == null)
++                h = t = newNode;
++            else {
++                t.lazySetNext(newNode);
++                t = newNode;
++            }
++        }
++        if (h == null)
++            h = t = new Node<E>(null);
++        head = h;
++        tail = t;
++    }
++
++    // Have to override just to update the javadoc
++
++    /**
++     * Inserts the specified element at the tail of this queue.
++     * As the queue is unbounded, this method will never throw
++     * {@link IllegalStateException} or return {@code false}.
++     *
++     * @return {@code true} (as specified by {@link Collection#add})
++     * @throws NullPointerException if the specified element is null
++     */
++    @Override
++    public boolean add(E e) {
++        return offer(e);
++    }
++
++    /**
++     * Tries to CAS head to p. If successful, repoint old head to itself
++     * as sentinel for succ(), below.
++     */
++    final void updateHead(Node<E> h, Node<E> p) {
++        if (h != p && casHead(h, p))
++            h.lazySetNext(h);
++    }
++
++    /**
++     * Returns the successor of p, or the head node if p.next has been
++     * linked to self, which will only be true if traversing with a
++     * stale pointer that is now off the list.
++     */
++    final Node<E> succ(Node<E> p) {
++        Node<E> next = p.next;
++        return (p == next) ? head : next;
++    }
++
++    /**
++     * Inserts the specified element at the tail of this queue.
++     * As the queue is unbounded, this method will never return {@code false}.
++     *
++     * @return {@code true} (as specified by {@link Queue#offer})
++     * @throws NullPointerException if the specified element is null
++     */
++    @Override
++    public boolean offer(E e) {
++        checkNotNull(e);
++        final Node<E> newNode = new Node<E>(e);
++
++        for (Node<E> t = tail, p = t;;) {
++            Node<E> q = p.next;
++            if (q == null) {
++                // p is last node
++                if (p.casNext(null, newNode)) {
++                    // Successful CAS is the linearization point
++                    // for e to become an element of this queue,
++                    // and for newNode to become "live".
++                    if (p != t) // hop two nodes at a time
++                        casTail(t, newNode);  // Failure is OK.
++                    return true;
++                }
++                // Lost CAS race to another thread; re-read next
++            }
++            else if (p == q)
++                // We have fallen off list.  If tail is unchanged, it
++                // will also be off-list, in which case we need to
++                // jump to head, from which all live nodes are always
++                // reachable.  Else the new tail is a better bet.
++                p = (t != (t = tail)) ? t : head;
++            else
++                // Check for tail updates after two hops.
++                p = (p != t && t != (t = tail)) ? t : q;
++        }
++    }
++
++    @Override
++    public E poll() {
++        restartFromHead:
++        for (;;) {
++            for (Node<E> h = head, p = h, q;;) {
++                E item = p.item;
++
++                if (item != null && p.casItem(item, null)) {
++                    // Successful CAS is the linearization point
++                    // for item to be removed from this queue.
++                    if (p != h) // hop two nodes at a time
++                        updateHead(h, ((q = p.next) != null) ? q : p);
++                    return item;
++                }
++                else if ((q = p.next) == null) {
++                    updateHead(h, p);
++                    return null;
++                }
++                else if (p == q)
++                    continue restartFromHead;
++                else
++                    p = q;
++            }
++        }
++    }
++
++    @Override
++    public E peek() {
++        restartFromHead:
++        for (;;) {
++            for (Node<E> h = head, p = h, q;;) {
++                E item = p.item;
++                if (item != null || (q = p.next) == null) {
++                    updateHead(h, p);
++                    return item;
++                }
++                else if (p == q)
++                    continue restartFromHead;
++                else
++                    p = q;
++            }
++        }
++    }
++
++    /**
++     * Returns the first live (non-deleted) node on list, or null if none.
++     * This is yet another variant of poll/peek; here returning the
++     * first node, not element.  We could make peek() a wrapper around
++     * first(), but that would cost an extra volatile read of item,
++     * and the need to add a retry loop to deal with the possibility
++     * of losing a race to a concurrent poll().
++     */
++    Node<E> first() {
++        restartFromHead:
++        for (;;) {
++            for (Node<E> h = head, p = h, q;;) {
++                boolean hasItem = (p.item != null);
++                if (hasItem || (q = p.next) == null) {
++                    updateHead(h, p);
++                    return hasItem ? p : null;
++                }
++                else if (p == q)
++                    continue restartFromHead;
++                else
++                    p = q;
++            }
++        }
++    }
++
++    /**
++     * Returns {@code true} if this queue contains no elements.
++     *
++     * @return {@code true} if this queue contains no elements
++     */
++    @Override
++    public boolean isEmpty() {
++        return first() == null;
++    }
++
++    /**
++     * Returns the number of elements in this queue.  If this queue
++     * contains more than {@code Integer.MAX_VALUE} elements, returns
++     * {@code Integer.MAX_VALUE}.
++     *
++     * <p>Beware that, unlike in most collections, this method is
++     * <em>NOT</em> a constant-time operation. Because of the
++     * asynchronous nature of these queues, determining the current
++     * number of elements requires an O(n) traversal.
++     * Additionally, if elements are added or removed during execution
++     * of this method, the returned result may be inaccurate.  Thus,
++     * this method is typically not very useful in concurrent
++     * applications.
++     *
++     * @return the number of elements in this queue
++     */
++    @Override
++    public int size() {
++        int count = 0;
++        for (Node<E> p = first(); p != null; p = succ(p))
++            if (p.item != null)
++                // Collection.size() spec says to max out
++                if (++count == Integer.MAX_VALUE)
++                    break;
++        return count;
++    }
++
++    /**
++     * Returns {@code true} if this queue contains the specified element.
++     * More formally, returns {@code true} if and only if this queue contains
++     * at least one element {@code e} such that {@code o.equals(e)}.
++     *
++     * @param o object to be checked for containment in this queue
++     * @return {@code true} if this queue contains the specified element
++     */
++    @Override
++    public boolean contains(Object o) {
++        if (o == null) return false;
++        for (Node<E> p = first(); p != null; p = succ(p)) {
++            E item = p.item;
++            if (item != null && o.equals(item))
++                return true;
++        }
++        return false;
++    }
++
++    /**
++     * Removes a single instance of the specified element from this queue,
++     * if it is present.  More formally, removes an element {@code e} such
++     * that {@code o.equals(e)}, if this queue contains one or more such
++     * elements.
++     * Returns {@code true} if this queue contained the specified element
++     * (or equivalently, if this queue changed as a result of the call).
++     *
++     * @param o element to be removed from this queue, if present
++     * @return {@code true} if this queue changed as a result of the call
++     */
++    @Override
++    public boolean remove(Object o) {
++        if (o != null) {
++            Node<E> next, pred = null;
++            for (Node<E> p = first(); p != null; pred = p, p = next) {
++                boolean removed = false;
++                E item = p.item;
++                if (item != null) {
++                    if (!o.equals(item)) {
++                        next = succ(p);
++                        continue;
++                    }
++                    removed = p.casItem(item, null);
++                }
++
++                next = succ(p);
++                if (pred != null && next != null) // unlink
++                    pred.casNext(p, next);
++                if (removed)
++                    return true;
++            }
++        }
++        return false;
++    }
++
++    /**
++     * Appends all of the elements in the specified collection to the end of
++     * this queue, in the order that they are returned by the specified
++     * collection's iterator.  Attempts to {@code addAll} of a queue to
++     * itself result in {@code IllegalArgumentException}.
++     *
++     * @param c the elements to be inserted into this queue
++     * @return {@code true} if this queue changed as a result of the call
++     * @throws NullPointerException if the specified collection or any
++     *         of its elements are null
++     * @throws IllegalArgumentException if the collection is this queue
++     */
++    @Override
++    public boolean addAll(Collection<? extends E> c) {
++        if (c == this)
++            // As historically specified in AbstractQueue#addAll
++            throw new IllegalArgumentException();
++
++        // Copy c into a private chain of Nodes
++        Node<E> beginningOfTheEnd = null, last = null;
++        for (E e : c) {
++            checkNotNull(e);
++            Node<E> newNode = new Node<E>(e);
++            if (beginningOfTheEnd == null)
++                beginningOfTheEnd = last = newNode;
++            else {
++                last.lazySetNext(newNode);
++                last = newNode;
++            }
++        }
++        if (beginningOfTheEnd == null)
++            return false;
++
++        // Atomically append the chain at the tail of this collection
++        for (Node<E> t = tail, p = t;;) {
++            Node<E> q = p.next;
++            if (q == null) {
++                // p is last node
++                if (p.casNext(null, beginningOfTheEnd)) {
++                    // Successful CAS is the linearization point
++                    // for all elements to be added to this queue.
++                    if (!casTail(t, last)) {
++                        // Try a little harder to update tail,
++                        // since we may be adding many elements.
++                        t = tail;
++                        if (last.next == null)
++                            casTail(t, last);
++                    }
++                    return true;
++                }
++                // Lost CAS race to another thread; re-read next
++            }
++            else if (p == q)
++                // We have fallen off list.  If tail is unchanged, it
++                // will also be off-list, in which case we need to
++                // jump to head, from which all live nodes are always
++                // reachable.  Else the new tail is a better bet.
++                p = (t != (t = tail)) ? t : head;
++            else
++                // Check for tail updates after two hops.
++                p = (p != t && t != (t = tail)) ? t : q;
++        }
++    }
++
++    /**
++     * Returns an array containing all of the elements in this queue, in
++     * proper sequence.
++     *
++     * <p>The returned array will be "safe" in that no references to it are
++     * maintained by this queue.  (In other words, this method must allocate
++     * a new array).  The caller is thus free to modify the returned array.
++     *
++     * <p>This method acts as bridge between array-based and collection-based
++     * APIs.
++     *
++     * @return an array containing all of the elements in this queue
++     */
++    @Override
++    public Object[] toArray() {
++        // Use ArrayList to deal with resizing.
++        ArrayList<E> al = new ArrayList<E>();
++        for (Node<E> p = first(); p != null; p = succ(p)) {
++            E item = p.item;
++            if (item != null)
++                al.add(item);
++        }
++        return al.toArray();
++    }
++
++    /**
++     * Returns an array containing all of the elements in this queue, in
++     * proper sequence; the runtime type of the returned array is that of
++     * the specified array.  If the queue fits in the specified array, it
++     * is returned therein.  Otherwise, a new array is allocated with the
++     * runtime type of the specified array and the size of this queue.
++     *
++     * <p>If this queue fits in the specified array with room to spare
++     * (i.e., the array has more elements than this queue), the element in
++     * the array immediately following the end of the queue is set to
++     * {@code null}.
++     *
++     * <p>Like the {@link #toArray()} method, this method acts as bridge between
++     * array-based and collection-based APIs.  Further, this method allows
++     * precise control over the runtime type of the output array, and may,
++     * under certain circumstances, be used to save allocation costs.
++     *
++     * <p>Suppose {@code x} is a queue known to contain only strings.
++     * The following code can be used to dump the queue into a newly
++     * allocated array of {@code String}:
++     *
++     *  <pre> {@code String[] y = x.toArray(new String[0]);}</pre>
++     *
++     * Note that {@code toArray(new Object[0])} is identical in function to
++     * {@code toArray()}.
++     *
++     * @param a the array into which the elements of the queue are to
++     *          be stored, if it is big enough; otherwise, a new array of the
++     *          same runtime type is allocated for this purpose
++     * @return an array containing all of the elements in this queue
++     * @throws ArrayStoreException if the runtime type of the specified array
++     *         is not a supertype of the runtime type of every element in
++     *         this queue
++     * @throws NullPointerException if the specified array is null
++     */
++    @Override
++    @SuppressWarnings("unchecked")
++    public <T> T[] toArray(T[] a) {
++        // try to use sent-in array
++        int k = 0;
++        Node<E> p;
++        for (p = first(); p != null && k < a.length; p = succ(p)) {
++            E item = p.item;
++            if (item != null)
++                a[k++] = (T)item;
++        }
++        if (p == null) {
++            if (k < a.length)
++                a[k] = null;
++            return a;
++        }
++
++        // If won't fit, use ArrayList version
++        ArrayList<E> al = new ArrayList<E>();
++        for (Node<E> q = first(); q != null; q = succ(q)) {
++            E item = q.item;
++            if (item != null)
++                al.add(item);
++        }
++        return al.toArray(a);
++    }
++
++    /**
++     * Returns an iterator over the elements in this queue in proper sequence.
++     * The elements will be returned in order from first (head) to last (tail).
++     *
++     * <p>The returned iterator is
++     * <a href="package-summary.html#Weakly"><i>weakly consistent</i></a>.
++     *
++     * @return an iterator over the elements in this queue in proper sequence
++     */
++    @Override
++    public Iterator<E> iterator() {
++        return new Itr();
++    }
++
++    private class Itr implements Iterator<E> {
++        /**
++         * Next node to return item for.
++         */
++        private Node<E> nextNode;
++
++        /**
++         * nextItem holds on to item fields because once we claim
++         * that an element exists in hasNext(), we must return it in
++         * the following next() call even if it was in the process of
++         * being removed when hasNext() was called.
++         */
++        private E nextItem;
++
++        /**
++         * Node of the last returned item, to support remove.
++         */
++        private Node<E> lastRet;
++
++        Itr() {
++            advance();
++        }
++
++        /**
++         * Moves to next valid node and returns item to return for
++         * next(), or null if no such.
++         */
++        private E advance() {
++            lastRet = nextNode;
++            E x = nextItem;
++
++            Node<E> pred, p;
++            if (nextNode == null) {
++                p = first();
++                pred = null;
++            } else {
++                pred = nextNode;
++                p = succ(nextNode);
++            }
++
++            for (;;) {
++                if (p == null) {
++                    nextNode = null;
++                    nextItem = null;
++                    return x;
++                }
++                E item = p.item;
++                if (item != null) {
++                    nextNode = p;
++                    nextItem = item;
++                    return x;
++                } else {
++                    // skip over nulls
++                    Node<E> next = succ(p);
++                    if (pred != null && next != null)
++                        pred.casNext(p, next);
++                    p = next;
++                }
++            }
++        }
++
++        @Override
++        public boolean hasNext() {
++            return nextNode != null;
++        }
++
++        @Override
++        public E next() {
++            if (nextNode == null) throw new NoSuchElementException();
++            return advance();
++        }
++
++        @Override
++        public void remove() {
++            Node<E> l = lastRet;
++            if (l == null) throw new IllegalStateException();
++            // rely on a future traversal to relink.
++            l.item = null;
++            lastRet = null;
++        }
++    }
++
++    /**
++     * Saves this queue to a stream (that is, serializes it).
++     *
++     * @param s the stream
++     * @throws java.io.IOException if an I/O error occurs
++     * @serialData All of the elements (each an {@code E}) in
++     * the proper order, followed by a null
++     */
++    private void writeObject(java.io.ObjectOutputStream s)
++        throws java.io.IOException {
++
++        // Write out any hidden stuff
++        s.defaultWriteObject();
++
++        // Write out all elements in the proper order.
++        for (Node<E> p = first(); p != null; p = succ(p)) {
++            Object item = p.item;
++            if (item != null)
++                s.writeObject(item);
++        }
++
++        // Use trailing null as sentinel
++        s.writeObject(null);
++    }
++
++    /**
++     * Reconstitutes this queue from a stream (that is, deserializes it).
++     * @param s the stream
++     * @throws ClassNotFoundException if the class of a serialized object
++     *         could not be found
++     * @throws java.io.IOException if an I/O error occurs
++     */
++    private void readObject(java.io.ObjectInputStream s)
++        throws java.io.IOException, ClassNotFoundException {
++        s.defaultReadObject();
++
++        // Read in elements until trailing null sentinel found
++        Node<E> h = null, t = null;
++        Object item;
++        while ((item = s.readObject()) != null) {
++            @SuppressWarnings("unchecked")
++            Node<E> newNode = new Node<E>((E) item);
++            if (h == null)
++                h = t = newNode;
++            else {
++                t.lazySetNext(newNode);
++                t = newNode;
++            }
++        }
++        if (h == null)
++            h = t = new Node<E>(null);
++        head = h;
++        tail = t;
++    }
++
++    /** A customized variant of Spliterators.IteratorSpliterator */
++    static final class CLQSpliterator<E> implements Spliterator<E> {
++        static final int MAX_BATCH = 1 << 25;  // max batch array size;
++        final CheckedConcurrentLinkedQueue<E> queue;
++        Node<E> current;    // current node; null until initialized
++        int batch;          // batch size for splits
++        boolean exhausted;  // true when no more nodes
++        CLQSpliterator(CheckedConcurrentLinkedQueue<E> queue) {
++            this.queue = queue;
++        }
++
++        @Override
++        public Spliterator<E> trySplit() {
++            Node<E> p;
++            final CheckedConcurrentLinkedQueue<E> q = this.queue;
++            int b = batch;
++            int n = (b <= 0) ? 1 : (b >= MAX_BATCH) ? MAX_BATCH : b + 1;
++            if (!exhausted &&
++                ((p = current) != null || (p = q.first()) != null) &&
++                p.next != null) {
++                Object[] a = new Object[n];
++                int i = 0;
++                do {
++                    if ((a[i] = p.item) != null)
++                        ++i;
++                    if (p == (p = p.next))
++                        p = q.first();
++                } while (p != null && i < n);
++                if ((current = p) == null)
++                    exhausted = true;
++                if (i > 0) {
++                    batch = i;
++                    return Spliterators.spliterator
++                        (a, 0, i, Spliterator.ORDERED | Spliterator.NONNULL |
++                         Spliterator.CONCURRENT);
++                }
++            }
++            return null;
++        }
++
++        @Override
++        public void forEachRemaining(Consumer<? super E> action) {
++            Node<E> p;
++            if (action == null) throw new NullPointerException();
++            final CheckedConcurrentLinkedQueue<E> q = this.queue;
++            if (!exhausted &&
++                ((p = current) != null || (p = q.first()) != null)) {
++                exhausted = true;
++                do {
++                    E e = p.item;
++                    if (p == (p = p.next))
++                        p = q.first();
++                    if (e != null)
++                        action.accept(e);
++                } while (p != null);
++            }
++        }
++
++        @Override
++        public boolean tryAdvance(Consumer<? super E> action) {
++            Node<E> p;
++            if (action == null) throw new NullPointerException();
++            final CheckedConcurrentLinkedQueue<E> q = this.queue;
++            if (!exhausted &&
++                ((p = current) != null || (p = q.first()) != null)) {
++                E e;
++                do {
++                    e = p.item;
++                    if (p == (p = p.next))
++                        p = q.first();
++                } while (e == null && p != null);
++                if ((current = p) == null)
++                    exhausted = true;
++                if (e != null) {
++                    action.accept(e);
++                    return true;
++                }
++            }
++            return false;
++        }
++
++        @Override
++        public long estimateSize() { return Long.MAX_VALUE; }
++
++        @Override
++        public int characteristics() {
++            return Spliterator.ORDERED | Spliterator.NONNULL |
++                Spliterator.CONCURRENT;
++        }
++    }
++
++    /**
++     * Returns a {@link Spliterator} over the elements in this queue.
++     *
++     * <p>The returned spliterator is
++     * <a href="package-summary.html#Weakly"><i>weakly consistent</i></a>.
++     *
++     * <p>The {@code Spliterator} reports {@link Spliterator#CONCURRENT},
++     * {@link Spliterator#ORDERED}, and {@link Spliterator#NONNULL}.
++     *
++     * @implNote
++     * The {@code Spliterator} implements {@code trySplit} to permit limited
++     * parallelism.
++     *
++     * @return a {@code Spliterator} over the elements in this queue
++     * @since 1.8
++     */
++    @Override
++    public Spliterator<E> spliterator() {
++        return new CLQSpliterator<E>(this);
++    }
++
++    /**
++     * Throws NullPointerException if argument is null.
++     *
++     * @param v the element
++     */
++    private static void checkNotNull(Object v) {
++        if (v == null)
++            throw new NullPointerException();
++    }
++
++    private boolean casTail(Node<E> cmp, Node<E> val) {
++        return UNSAFE.compareAndSwapObject(this, tailOffset, cmp, val);
++    }
++
++    private boolean casHead(Node<E> cmp, Node<E> val) {
++        return UNSAFE.compareAndSwapObject(this, headOffset, cmp, val);
++    }
++
++    // Unsafe mechanics
++
++    private static final sun.misc.Unsafe UNSAFE;
++    private static final long headOffset;
++    private static final long tailOffset;
++    static {
++        try {
++            UNSAFE = Akari.UNSAFE;
++            Class<?> k = CheckedConcurrentLinkedQueue.class;
++            headOffset = UNSAFE.objectFieldOffset
++                (k.getDeclaredField("head"));
++            tailOffset = UNSAFE.objectFieldOffset
++                (k.getDeclaredField("tail"));
++        } catch (Exception e) {
++            throw new Error(e);
++        }
++    }
++}
+diff --git a/src/main/java/io/akarin/api/internal/utils/ReentrantSpinningLock.java b/src/main/java/io/akarin/api/internal/utils/ReentrantSpinningLock.java
+new file mode 100644
+index 000000000..a1de55db9
+--- /dev/null
++++ b/src/main/java/io/akarin/api/internal/utils/ReentrantSpinningLock.java
+@@ -0,0 +1,102 @@
++package io.akarin.api.internal.utils;
++
++import java.util.concurrent.atomic.AtomicBoolean;
++import java.util.concurrent.atomic.AtomicInteger;
++
++public class ReentrantSpinningLock {
++    /*
++     * Impl Note:
++     * A write lock can reentrant as a read lock, while a
++     * read lock is not allowed to reentrant as a write lock.
++     * READ LOCK IS UNTESTED, USE WITH CATION.
++     */
++    private final AtomicBoolean writeLocked = new AtomicBoolean(false);
++    
++    // --------- Thread local restricted fields ---------
++    private long heldThreadId = 0;
++    private int reentrantLocks = 0;
++    
++    /**
++     * Lock as a typical reentrant write lock
++     */
++    public void lock() {
++        long currentThreadId = Thread.currentThread().getId();
++        if (heldThreadId == currentThreadId) {
++            reentrantLocks++;
++        } else {
++            while (!writeLocked.compareAndSet(false, true)) ; // In case acquire one lock concurrently
++            heldThreadId = currentThreadId;
++        }
++    }
++    
++    public void unlock() {
++        if (reentrantLocks == 0) {
++            heldThreadId = 0;
++            //if (readerThreads.get() == 0 || readerThreads.getAndDecrement() == 1) { // Micro-optimization: this saves one subtract
++                writeLocked.set(false);
++            //}
++        } else {
++            --reentrantLocks;
++        }
++    }
++    
++    private final AtomicInteger readerThreads = new AtomicInteger(0);
++    
++    /**
++     * Lock as a typical reentrant read lock
++     */
++    @Deprecated
++    public void lockWeak() {
++        long currentThreadId = Thread.currentThread().getId();
++        if (heldThreadId == currentThreadId) {
++            reentrantLocks++;
++        } else {
++            if (readerThreads.get() == 0) {
++                while (!writeLocked.compareAndSet(false, true)) ; // Block future write lock
++            }
++            heldThreadId = currentThreadId;
++            readerThreads.getAndIncrement(); // Micro-optimization: this saves one plus
++        }
++    }
++    
++    @Deprecated
++    public void unlockWeak() {
++        if (reentrantLocks == 0) {
++            heldThreadId = 0;
++            writeLocked.set(false);
++        } else {
++            --reentrantLocks;
++        }
++    }
++    
++    // --------- Wrappers to allow typical usages ---------
++    private SpinningWriteLock wrappedWriteLock = new SpinningWriteLock();
++    private SpinningReadLock wrappedReadLock = new SpinningReadLock();
++    
++    public class SpinningWriteLock {
++        public void lock() {
++            lock();
++        }
++        public void unlock() {
++            unlock();
++        }
++    }
++    
++    @Deprecated
++    public class SpinningReadLock {
++        public void lock() {
++            lockWeak();
++        }
++        public void unlock() {
++            unlockWeak();
++        }
++    }
++    
++    public SpinningWriteLock writeLock() {
++        return wrappedWriteLock;
++    }
++    
++    public SpinningReadLock readLock() {
++        return wrappedReadLock;
++    }
++}
+diff --git a/src/main/java/io/akarin/api/internal/utils/WrappedCollections.java b/src/main/java/io/akarin/api/internal/utils/WrappedCollections.java
+new file mode 100644
+index 000000000..fda965263
+--- /dev/null
++++ b/src/main/java/io/akarin/api/internal/utils/WrappedCollections.java
+@@ -0,0 +1,209 @@
++package io.akarin.api.internal.utils;
++
++import java.io.Serializable;
++import java.io.ObjectOutputStream;
++import java.io.IOException;
++import java.util.Collection;
++import java.util.Comparator;
++import java.util.Iterator;
++import java.util.List;
++import java.util.ListIterator;
++import java.util.Objects;
++import java.util.Spliterator;
++import java.util.function.Consumer;
++import java.util.function.Predicate;
++import java.util.function.UnaryOperator;
++import java.util.stream.Stream;
++
++public class WrappedCollections {
++    // Wrappers
++    public static <T> Collection<T> wrappedCollection(Collection<T> c) {
++        return new WrappedCollection<>(c);
++    }
++
++    /**
++     * @serial include
++     */
++    static class WrappedCollection<E> implements Collection<E>, Serializable {
++        private static final long serialVersionUID = 3053995032091335093L;
++
++        final Collection<E> list;  // Backing Collection
++        final Object mutex;     // Object on which to synchronize
++
++        WrappedCollection(Collection<E> c) {
++            this.list = Objects.requireNonNull(c);
++            mutex = this;
++        }
++
++        @Override
++        public int size() {
++            return list.size();
++        }
++        @Override
++        public boolean isEmpty() {
++            return list.isEmpty();
++        }
++        @Override
++        public boolean contains(Object o) {
++            return list.contains(o);
++        }
++        @Override
++        public Object[] toArray() {
++            return list.toArray();
++        }
++        @Override
++        public <T> T[] toArray(T[] a) {
++            return list.toArray(a);
++        }
++
++        @Override
++        public Iterator<E> iterator() {
++            return list.iterator();
++        }
++
++        @Override
++        public boolean add(E e) {
++            return list.add(e);
++        }
++        @Override
++        public boolean remove(Object o) {
++            return list.remove(o);
++        }
++
++        @Override
++        public boolean containsAll(Collection<?> coll) {
++            return list.containsAll(coll);
++        }
++        @Override
++        public boolean addAll(Collection<? extends E> coll) {
++            return list.addAll(coll);
++        }
++        @Override
++        public boolean removeAll(Collection<?> coll) {
++            return list.removeAll(coll);
++        }
++        @Override
++        public boolean retainAll(Collection<?> coll) {
++            return list.retainAll(coll);
++        }
++        @Override
++        public void clear() {
++            list.clear();
++        }
++        @Override
++        public String toString() {
++            return list.toString();
++        }
++        // Override default methods in Collection
++        @Override
++        public void forEach(Consumer<? super E> consumer) {
++            list.forEach(consumer);
++        }
++        @Override
++        public boolean removeIf(Predicate<? super E> filter) {
++            return list.removeIf(filter);
++        }
++        @Override
++        public Spliterator<E> spliterator() {
++            return list.spliterator();
++        }
++        @Override
++        public Stream<E> stream() {
++            return list.stream();
++        }
++        @Override
++        public Stream<E> parallelStream() {
++            return list.parallelStream();
++        }
++        private void writeObject(ObjectOutputStream s) throws IOException {
++            s.defaultWriteObject();
++        }
++    }
++
++    public static <T> List<T> wrappedList(List<T> list) {
++        return new WrappedList<>(list);
++    }
++
++    /**
++     * @serial include
++     */
++    static class WrappedList<E> extends WrappedCollection<E> implements List<E> {
++        private static final long serialVersionUID = -7754090372962971524L;
++
++        final List<E> list;
++
++        WrappedList(List<E> list) {
++            super(list);
++            this.list = list;
++        }
++
++        @Override
++        public boolean equals(Object o) {
++            if (this == o) return true;
++            return list.equals(o);
++        }
++        @Override
++        public int hashCode() {
++            return list.hashCode();
++        }
++
++        @Override
++        public E get(int index) {
++            return list.get(index);
++        }
++        @Override
++        public E set(int index, E element) {
++            return list.set(index, element);
++        }
++        @Override
++        public void add(int index, E element) {
++            list.add(index, element);
++        }
++        @Override
++        public E remove(int index) {
++            return list.remove(index);
++        }
++
++        @Override
++        public int indexOf(Object o) {
++            return list.indexOf(o);
++        }
++        @Override
++        public int lastIndexOf(Object o) {
++            return list.lastIndexOf(o);
++        }
++
++        @Override
++        public boolean addAll(int index, Collection<? extends E> c) {
++            return list.addAll(index, c);
++        }
++
++        @Override
++        public ListIterator<E> listIterator() {
++            return list.listIterator();
++        }
++
++        @Override
++        public ListIterator<E> listIterator(int index) {
++            return list.listIterator(index);
++        }
++
++        @Override
++        public List<E> subList(int fromIndex, int toIndex) {
++            return new WrappedList<>(list.subList(fromIndex, toIndex));
++        }
++
++        @Override
++        public void replaceAll(UnaryOperator<E> operator) {
++            list.replaceAll(operator);
++        }
++        @Override
++        public void sort(Comparator<? super E> c) {
++            list.sort(c);
++        }
++
++        private Object readResolve() {
++            return this;
++        }
++    }
++}
+\ No newline at end of file
+diff --git a/src/main/java/io/akarin/api/internal/utils/random/LightRNG.java b/src/main/java/io/akarin/api/internal/utils/random/LightRNG.java
+new file mode 100644
+index 000000000..296314001
+--- /dev/null
++++ b/src/main/java/io/akarin/api/internal/utils/random/LightRNG.java
+@@ -0,0 +1,240 @@
++/*
++Written in 2015 by Sebastiano Vigna (vigna@acm.org)
++
++To the extent possible under law, the author has dedicated all copyright
++and related and neighboring rights to this software to the public domain
++worldwide. This software is distributed without any warranty.
++
++See <http://creativecommons.org/publicdomain/zero/1.0/>. */
++package io.akarin.api.internal.utils.random;
++
++/**
++ * This is a SplittableRandom-style generator, meant to have a tiny state
++ * that permits storing many different generators with low overhead.
++ * It should be rather fast, though no guarantees can be made on all hardware.
++ * <br>
++ * Benchmarking on a Windows laptop with an i7-4700MQ processor running OpenJDK 8
++ * reports generation of 64-bit random long output as 17.8x faster than generating
++ * an equivalent number of random longs with java.util.Random, and generation of
++ * 32-bit random int output as 9.8x faster. Specifically, generating 1 billion longs
++ * took about 1.28 nanoseconds per long (1.277 seconds for the whole group) with
++ * LightRNG, while java.util.Random (which is meant to produce int, to be fair) took
++ * about 22.8 nanoseconds per long (22.797 seconds for the whole group). XorRNG
++ * appears to be occasionally faster on int output than LightRNG, but it isn't clear
++ * why or what causes that (JIT or GC internals, possibly). XorRNG is slightly
++ * slower at generating 64-bit random data, including long and double, but not by
++ * a significant degree (a multiplier between 0.9 and 1.2 times). The only deciding
++ * factor then is state size, where LightRNG is as small as possible for any JVM
++ * object with even a single field: 16 bytes (on a 64-bit JVM; 8-byte objects with
++ * 4 bytes or less of non-static members may be possible on 32-bit JVMs but I can't
++ * find anything confirming that guess).
++ * <br>
++ * So yes, this should be very fast, and with only a single long used per LightRNG,
++ * it is about as memory-efficient as these generators get.
++ * <br>
++ * Written in 2015 by Sebastiano Vigna (vigna@acm.org)
++ * @author Sebastiano Vigna
++ * @author Tommy Ettinger
++ */
++public class LightRNG implements RandomnessSource, StatefulRandomness
++{
++	/** 2 raised to the 53, - 1. */
++    private static final long DOUBLE_MASK = ( 1L << 53 ) - 1;
++    /** 2 raised to the -53. */
++    private static final double NORM_53 = 1. / ( 1L << 53 );
++    /** 2 raised to the 24, -1. */
++    private static final long FLOAT_MASK = ( 1L << 24 ) - 1;
++    /** 2 raised to the -24. */
++    private static final double NORM_24 = 1. / ( 1L << 24 );
++
++	private static final long serialVersionUID = -374415589203474497L;
++
++    public long state; /* The state can be seeded with any value. */
++
++    /** Creates a new generator seeded using Math.random. */
++    public LightRNG() {
++        this((long) Math.floor(Math.random() * Long.MAX_VALUE));
++    }
++
++    public LightRNG( final long seed ) {
++        setSeed(seed);
++    }
++
++    @Override
++    public int next( int bits ) {
++        return (int)( nextLong() & ( 1L << bits ) - 1 );
++    }
++
++    /**
++     * Can return any long, positive or negative, of any size permissible in a 64-bit signed integer.
++     * @return any long, all 64 bits are random
++     */
++    @Override
++    public long nextLong() {
++        long z = ( state += 0x9E3779B97F4A7C15L );
++        z = (z ^ (z >>> 30)) * 0xBF58476D1CE4E5B9L;
++        z = (z ^ (z >>> 27)) * 0x94D049BB133111EBL;
++        return z ^ (z >>> 31);
++    }
++
++    /**
++     * Produces a copy of this RandomnessSource that, if next() and/or nextLong() are called on this object and the
++     * copy, both will generate the same sequence of random numbers from the point copy() was called. This just need to
++     * copy the state so it isn't shared, usually, and produce a new value with the same exact state.
++     *
++     * @return a copy of this RandomnessSource
++     */
++    @Override
++    public RandomnessSource copy() {
++        return new LightRNG(state);
++    }
++
++    /**
++     * Can return any int, positive or negative, of any size permissible in a 32-bit signed integer.
++     * @return any int, all 32 bits are random
++     */
++    public int nextInt() {
++        return (int)nextLong();
++    }
++
++    /**
++     * Exclusive on the upper bound.  The lower bound is 0.
++     * @param bound the upper bound; should be positive
++     * @return a random int less than n and at least equal to 0
++     */
++    public int nextInt( final int bound ) {
++        if ( bound <= 0 ) return 0;
++        int threshold = (0x7fffffff - bound + 1) % bound;
++        for (;;) {
++            int bits = (int)(nextLong() & 0x7fffffff);
++            if (bits >= threshold)
++                return bits % bound;
++        }
++    }
++    /**
++     * Inclusive lower, exclusive upper.
++     * @param lower the lower bound, inclusive, can be positive or negative
++     * @param upper the upper bound, exclusive, should be positive, must be greater than lower
++     * @return a random int at least equal to lower and less than upper
++     */
++    public int nextInt( final int lower, final int upper ) {
++        if ( upper - lower <= 0 ) throw new IllegalArgumentException("Upper bound must be greater than lower bound");
++        return lower + nextInt(upper - lower);
++    }
++
++    /**
++     * Exclusive on the upper bound. The lower bound is 0.
++     * @param bound the upper bound; should be positive
++     * @return a random long less than n
++     */
++    public long nextLong( final long bound ) {
++        if ( bound <= 0 ) return 0;
++        long threshold = (0x7fffffffffffffffL - bound + 1) % bound;
++        for (;;) {
++            long bits = nextLong() & 0x7fffffffffffffffL;
++            if (bits >= threshold)
++                return bits % bound;
++        }
++    }
++
++    /**
++     * Inclusive lower, exclusive upper.
++     * @param lower the lower bound, inclusive, can be positive or negative
++     * @param upper the upper bound, exclusive, should be positive, must be greater than lower
++     * @return a random long at least equal to lower and less than upper
++     */
++    public long nextLong( final long lower, final long upper ) {
++        if ( upper - lower <= 0 )  throw new IllegalArgumentException("Upper bound must be greater than lower bound");
++        return lower + nextLong(upper - lower);
++    }
++    /**
++     * Gets a uniform random double in the range [0.0,1.0)
++     * @return a random double at least equal to 0.0 and less than 1.0
++     */
++    public double nextDouble() {
++        return ( nextLong() & DOUBLE_MASK ) * NORM_53;
++    }
++
++    /**
++     * Gets a uniform random double in the range [0.0,outer) given a positive parameter outer. If outer
++     * is negative, it will be the (exclusive) lower bound and 0.0 will be the (inclusive) upper bound.
++     * @param outer the exclusive outer bound, can be negative
++     * @return a random double between 0.0 (inclusive) and outer (exclusive)
++     */
++    public double nextDouble(final double outer) {
++        return nextDouble() * outer;
++    }
++
++    /**
++     * Gets a uniform random float in the range [0.0,1.0)
++     * @return a random float at least equal to 0.0 and less than 1.0
++     */
++    public float nextFloat() {
++        return (float)( ( nextLong() & FLOAT_MASK ) * NORM_24 );
++    }
++
++    /**
++     * Gets a random value, true or false.
++     * Calls nextLong() once.
++     * @return a random true or false value.
++     */
++    public boolean nextBoolean() {
++        return ( nextLong() & 1 ) != 0L;
++    }
++
++    /**
++     * Given a byte array as a parameter, this will fill the array with random bytes (modifying it
++     * in-place). Calls nextLong() {@code Math.ceil(bytes.length / 8.0)} times.
++     * @param bytes a byte array that will have its contents overwritten with random bytes.
++     */
++    public void nextBytes( final byte[] bytes ) {
++        int i = bytes.length, n = 0;
++        while( i != 0 ) {
++            n = Math.min( i, 8 );
++            for ( long bits = nextLong(); n-- != 0; bits >>= 8 ) bytes[ --i ] = (byte)bits;
++        }
++    }
++
++
++
++    /**
++     * Sets the seed of this generator (which is also the current state).
++     * @param seed the seed to use for this LightRNG, as if it was constructed with this seed.
++     */
++    public void setSeed( final long seed ) {
++        state = seed;
++    }
++    /**
++     * Sets the seed (also the current state) of this generator.
++     * @param seed the seed to use for this LightRNG, as if it was constructed with this seed.
++     */
++    @Override
++    public void setState( final long seed ) {
++        state = seed;
++    }
++    /**
++     * Gets the current state of this generator.
++     * @return the current seed of this LightRNG, changed once per call to nextLong()
++     */
++    @Override
++    public long getState() {
++        return state;
++    }
++
++    /**
++     * Advances or rolls back the LightRNG's state without actually generating numbers. Skip forward
++     * or backward a number of steps specified by advance, where a step is equal to one call to nextInt().
++     * @param advance Number of future generations to skip past. Can be negative to backtrack.
++     * @return the state after skipping.
++     */
++    public long skip(long advance)
++    {
++        return state += 0x9E3779B97F4A7C15L * advance;
++    }
++
++    @Override
++    public String toString() {
++        return "LightRNG (" + state + ")"; // Akarin
++    }
++
++}
+\ No newline at end of file
+diff --git a/src/main/java/io/akarin/api/internal/utils/random/LightRandom.java b/src/main/java/io/akarin/api/internal/utils/random/LightRandom.java
+new file mode 100644
+index 000000000..b70c4072c
+--- /dev/null
++++ b/src/main/java/io/akarin/api/internal/utils/random/LightRandom.java
+@@ -0,0 +1,62 @@
++package io.akarin.api.internal.utils.random;
++
++import java.util.Random;
++
++/**
++ * This is a "fake" LightRandom, backed by the LightRNG.
++ * 
++ * This is useful if you want to quickly replace a Random variable with
++ * LightRNG without breaking every code.
++ */
++public class LightRandom extends Random {
++	public static LightRNG light = new LightRNG(); // LightRNG, static.
++	
++	private static final long serialVersionUID = 1L;
++
++	@Override
++	public int next(int bits) {
++		return light.next(bits);
++	}
++	
++	@Override
++	public void nextBytes(byte[] bytes) {
++		light.nextBytes(bytes);
++	}
++	
++	@Override
++	public int nextInt() {
++		return light.nextInt();
++	}
++	
++	@Override
++	public int nextInt(int n) {
++		return light.nextInt(n);
++	}
++	
++	@Override
++	public long nextLong() {
++		return light.nextLong();
++	}
++	
++	@Override
++	public boolean nextBoolean() {
++		return light.nextBoolean();
++	}
++	
++	@Override
++	public float nextFloat() {
++		return light.nextFloat();
++	}
++	
++	@Override
++	public double nextDouble() {
++		return light.nextDouble();
++	}
++	
++	// Akarin start
++	@Override
++	public void setSeed(long seed) {
++        light.setSeed(seed);
++    }
++	// Akarin end
++}
+\ No newline at end of file
+diff --git a/src/main/java/io/akarin/api/internal/utils/random/RandomnessSource.java b/src/main/java/io/akarin/api/internal/utils/random/RandomnessSource.java
+new file mode 100644
+index 000000000..8c86bf176
+--- /dev/null
++++ b/src/main/java/io/akarin/api/internal/utils/random/RandomnessSource.java
+@@ -0,0 +1,40 @@
++package io.akarin.api.internal.utils.random;
++
++import java.io.Serializable;
++
++/**
++ * This interface defines the interactions required of a random number
++ * generator. It is a replacement for Java's built-in Random because for
++ * improved performance.
++ *
++ * @author Eben Howard - http://squidpony.com - howard@squidpony.com
++ */
++public interface RandomnessSource extends Serializable {
++
++    /**
++     * Using this method, any algorithm that might use the built-in Java Random
++     * can interface with this randomness source.
++     *
++     * @param bits the number of bits to be returned
++     * @return the integer containing the appropriate number of bits
++     */
++    int next(int bits);
++
++    /**
++     *
++     * Using this method, any algorithm that needs to efficiently generate more
++     * than 32 bits of random data can interface with this randomness source.
++     *
++     * Get a random long between Long.MIN_VALUE and Long.MAX_VALUE (both inclusive).
++     * @return a random long between Long.MIN_VALUE and Long.MAX_VALUE (both inclusive)
++     */
++    long nextLong();
++
++    /**
++     * Produces a copy of this RandomnessSource that, if next() and/or nextLong() are called on this object and the
++     * copy, both will generate the same sequence of random numbers from the point copy() was called. This just need to
++     * copy the state so it isn't shared, usually, and produce a new value with the same exact state.
++     * @return a copy of this RandomnessSource
++     */
++    RandomnessSource copy();
++}
+\ No newline at end of file
+diff --git a/src/main/java/io/akarin/api/internal/utils/random/StatefulRandomness.java b/src/main/java/io/akarin/api/internal/utils/random/StatefulRandomness.java
+new file mode 100644
+index 000000000..0a02a0a8a
+--- /dev/null
++++ b/src/main/java/io/akarin/api/internal/utils/random/StatefulRandomness.java
+@@ -0,0 +1,20 @@
++package io.akarin.api.internal.utils.random;
++
++/**
++ * A simple interface for RandomnessSources that have the additional property of a state that can be re-set.
++ * Created by Tommy Ettinger on 9/15/2015.
++ */
++public interface StatefulRandomness extends RandomnessSource {
++    /**
++     * Get the current internal state of the StatefulRandomness as a long.
++     * @return the current internal state of this object.
++     */
++    long getState();
++
++    /**
++     * Set the current internal state of this StatefulRandomness with a long.
++     *
++     * @param state a 64-bit long. You should avoid passing 0, even though some implementations can handle that.
++     */
++    void setState(long state);
++}
+\ No newline at end of file
+diff --git a/src/main/java/io/akarin/api/internal/utils/thread/OpenExecutionException.java b/src/main/java/io/akarin/api/internal/utils/thread/OpenExecutionException.java
+new file mode 100644
+index 000000000..215952436
+--- /dev/null
++++ b/src/main/java/io/akarin/api/internal/utils/thread/OpenExecutionException.java
+@@ -0,0 +1,7 @@
++package io.akarin.api.internal.utils.thread;
++
++import java.util.concurrent.ExecutionException;
++
++public class OpenExecutionException extends ExecutionException {
++    private static final long serialVersionUID = 7830266012832686185L;
++}
+diff --git a/src/main/java/io/akarin/api/internal/utils/thread/SuspendableExecutorCompletionService.java b/src/main/java/io/akarin/api/internal/utils/thread/SuspendableExecutorCompletionService.java
+new file mode 100644
+index 000000000..6204d15c8
+--- /dev/null
++++ b/src/main/java/io/akarin/api/internal/utils/thread/SuspendableExecutorCompletionService.java
+@@ -0,0 +1,142 @@
++/*
++ * ORACLE PROPRIETARY/CONFIDENTIAL. Use is subject to license terms.
++ *
++ *
++ *
++ *
++ *
++ *
++ *
++ *
++ *
++ *
++ *
++ *
++ *
++ *
++ *
++ *
++ *
++ *
++ *
++ *
++ */
++
++/*
++ *
++ *
++ *
++ *
++ *
++ * Written by Doug Lea with assistance from members of JCP JSR-166
++ * Expert Group and released to the public domain, as explained at
++ * http://creativecommons.org/publicdomain/zero/1.0/
++ */
++
++package io.akarin.api.internal.utils.thread;
++
++import java.util.concurrent.BlockingQueue;
++import java.util.concurrent.Callable;
++import java.util.concurrent.CompletionService;
++import java.util.concurrent.Future;
++import java.util.concurrent.FutureTask;
++import java.util.concurrent.LinkedBlockingQueue;
++import java.util.concurrent.RunnableFuture;
++import java.util.concurrent.TimeUnit;
++
++public class SuspendableExecutorCompletionService<V> implements CompletionService<V> {
++    private final SuspendableThreadPoolExecutor executor;
++    private final BlockingQueue<Future<V>> completionQueue;
++    
++    public void suspend() {
++        executor.suspend();
++    }
++    
++    public void resume() {
++        executor.resume();
++    }
++
++    /**
++     * FutureTask extension to enqueue upon completion
++     */
++    private class QueueingFuture extends FutureTask<Void> {
++        QueueingFuture(RunnableFuture<V> task) {
++            super(task, null);
++            this.task = task;
++        }
++        protected void done() { completionQueue.add(task); }
++        private final Future<V> task;
++    }
++
++    private RunnableFuture<V> newTaskFor(Callable<V> task) {
++        return new FutureTask<V>(task);
++    }
++
++    private RunnableFuture<V> newTaskFor(Runnable task, V result) {
++        return new FutureTask<V>(task, result);
++    }
++
++    /**
++     * Creates an ExecutorCompletionService using the supplied
++     * executor for base task execution and a
++     * {@link LinkedBlockingQueue} as a completion queue.
++     *
++     * @param executor the executor to use
++     * @throws NullPointerException if executor is {@code null}
++     */
++    public SuspendableExecutorCompletionService(SuspendableThreadPoolExecutor executor) {
++        if (executor == null)
++            throw new NullPointerException();
++        this.executor = executor;
++        this.completionQueue = new LinkedBlockingQueue<Future<V>>();
++    }
++
++    /**
++     * Creates an ExecutorCompletionService using the supplied
++     * executor for base task execution and the supplied queue as its
++     * completion queue.
++     *
++     * @param executor the executor to use
++     * @param completionQueue the queue to use as the completion queue
++     *        normally one dedicated for use by this service. This
++     *        queue is treated as unbounded -- failed attempted
++     *        {@code Queue.add} operations for completed tasks cause
++     *        them not to be retrievable.
++     * @throws NullPointerException if executor or completionQueue are {@code null}
++     */
++    public SuspendableExecutorCompletionService(SuspendableThreadPoolExecutor executor,
++                                     BlockingQueue<Future<V>> completionQueue) {
++        if (executor == null || completionQueue == null)
++            throw new NullPointerException();
++        this.executor = executor;
++        this.completionQueue = completionQueue;
++    }
++
++    public Future<V> submit(Callable<V> task) {
++        if (task == null) throw new NullPointerException();
++        RunnableFuture<V> f = newTaskFor(task);
++        executor.execute(new QueueingFuture(f));
++        return f;
++    }
++
++    public Future<V> submit(Runnable task, V result) {
++        if (task == null) throw new NullPointerException();
++        RunnableFuture<V> f = newTaskFor(task, result);
++        executor.execute(new QueueingFuture(f));
++        return f;
++    }
++
++    public Future<V> take() throws InterruptedException {
++        return completionQueue.take();
++    }
++
++    public Future<V> poll() {
++        return completionQueue.poll();
++    }
++
++    public Future<V> poll(long timeout, TimeUnit unit)
++            throws InterruptedException {
++        return completionQueue.poll(timeout, unit);
++    }
++
++}
+diff --git a/src/main/java/io/akarin/api/internal/utils/thread/SuspendableThreadPoolExecutor.java b/src/main/java/io/akarin/api/internal/utils/thread/SuspendableThreadPoolExecutor.java
+new file mode 100644
+index 000000000..317562963
+--- /dev/null
++++ b/src/main/java/io/akarin/api/internal/utils/thread/SuspendableThreadPoolExecutor.java
+@@ -0,0 +1,1842 @@
++/*
++ * ORACLE PROPRIETARY/CONFIDENTIAL. Use is subject to license terms.
++ *
++ *
++ *
++ *
++ *
++ *
++ *
++ *
++ *
++ *
++ *
++ *
++ *
++ *
++ *
++ *
++ *
++ *
++ *
++ *
++ */
++
++/*
++ *
++ *
++ *
++ *
++ *
++ * Written by Doug Lea with assistance from members of JCP JSR-166
++ * Expert Group and released to the public domain, as explained at
++ * http://creativecommons.org/publicdomain/zero/1.0/
++ */
++
++package io.akarin.api.internal.utils.thread;
++
++import java.util.concurrent.locks.AbstractQueuedSynchronizer;
++import java.util.concurrent.locks.Condition;
++import java.util.concurrent.locks.ReentrantLock;
++import java.util.concurrent.BlockingQueue;
++import java.util.concurrent.Executors;
++import java.util.concurrent.Future;
++import java.util.concurrent.RejectedExecutionException;
++import java.util.concurrent.RejectedExecutionHandler;
++import java.util.concurrent.ThreadFactory;
++import java.util.concurrent.ThreadPoolExecutor;
++import java.util.concurrent.TimeUnit;
++import java.util.concurrent.atomic.AtomicInteger;
++import java.util.*;
++
++public class SuspendableThreadPoolExecutor extends ThreadPoolExecutor {
++    /**
++     * The main pool control state, ctl, is an atomic integer packing
++     * two conceptual fields
++     *   workerCount, indicating the effective number of threads
++     *   runState,    indicating whether running, shutting down etc
++     *
++     * In order to pack them into one int, we limit workerCount to
++     * (2^29)-1 (about 500 million) threads rather than (2^31)-1 (2
++     * billion) otherwise representable. If this is ever an issue in
++     * the future, the variable can be changed to be an AtomicLong,
++     * and the shift/mask constants below adjusted. But until the need
++     * arises, this code is a bit faster and simpler using an int.
++     *
++     * The workerCount is the number of workers that have been
++     * permitted to start and not permitted to stop.  The value may be
++     * transiently different from the actual number of live threads,
++     * for example when a ThreadFactory fails to create a thread when
++     * asked, and when exiting threads are still performing
++     * bookkeeping before terminating. The user-visible pool size is
++     * reported as the current size of the workers set.
++     *
++     * The runState provides the main lifecycle control, taking on values:
++     *
++     *   RUNNING:  Accept new tasks and process queued tasks
++     *   SHUTDOWN: Don't accept new tasks, but process queued tasks
++     *   STOP:     Don't accept new tasks, don't process queued tasks,
++     *             and interrupt in-progress tasks
++     *   TIDYING:  All tasks have terminated, workerCount is zero,
++     *             the thread transitioning to state TIDYING
++     *             will run the terminated() hook method
++     *   TERMINATED: terminated() has completed
++     *
++     * The numerical order among these values matters, to allow
++     * ordered comparisons. The runState monotonically increases over
++     * time, but need not hit each state. The transitions are:
++     *
++     * RUNNING -> SHUTDOWN
++     *    On invocation of shutdown(), perhaps implicitly in finalize()
++     * (RUNNING or SHUTDOWN) -> STOP
++     *    On invocation of shutdownNow()
++     * SHUTDOWN -> TIDYING
++     *    When both queue and pool are empty
++     * STOP -> TIDYING
++     *    When pool is empty
++     * TIDYING -> TERMINATED
++     *    When the terminated() hook method has completed
++     *
++     * Threads waiting in awaitTermination() will return when the
++     * state reaches TERMINATED.
++     *
++     * Detecting the transition from SHUTDOWN to TIDYING is less
++     * straightforward than you'd like because the queue may become
++     * empty after non-empty and vice versa during SHUTDOWN state, but
++     * we can only terminate if, after seeing that it is empty, we see
++     * that workerCount is 0 (which sometimes entails a recheck -- see
++     * below).
++     */
++    private final AtomicInteger ctl = new AtomicInteger(ctlOf(RUNNING, 0));
++    private static final int COUNT_BITS = Integer.SIZE - 3;
++    private static final int CAPACITY   = (1 << COUNT_BITS) - 1;
++
++    // runState is stored in the high-order bits
++    private static final int RUNNING    = -1 << COUNT_BITS;
++    private static final int SHUTDOWN   =  0 << COUNT_BITS;
++    private static final int STOP       =  1 << COUNT_BITS;
++    private static final int TIDYING    =  2 << COUNT_BITS;
++    private static final int TERMINATED =  3 << COUNT_BITS;
++
++    // Packing and unpacking ctl
++    private static int runStateOf(int c)     { return c & ~CAPACITY; }
++    private static int workerCountOf(int c)  { return c & CAPACITY; }
++    private static int ctlOf(int rs, int wc) { return rs | wc; }
++    
++    public void suspend() {
++        Thread curThread = Thread.currentThread();
++        for (Worker worker : workers) if (worker.thread != curThread) worker.thread.suspend();
++    }
++    
++    public void resume() {
++        Thread curThread = Thread.currentThread();
++        for (Worker worker : workers) if (worker.thread != curThread) worker.thread.resume();
++    }
++
++    /*
++     * Bit field accessors that don't require unpacking ctl.
++     * These depend on the bit layout and on workerCount being never negative.
++     */
++
++    private static boolean runStateLessThan(int c, int s) {
++        return c < s;
++    }
++
++    private static boolean runStateAtLeast(int c, int s) {
++        return c >= s;
++    }
++
++    private static boolean isRunning(int c) {
++        return c < SHUTDOWN;
++    }
++
++    /**
++     * Attempts to CAS-increment the workerCount field of ctl.
++     */
++    private boolean compareAndIncrementWorkerCount(int expect) {
++        return ctl.compareAndSet(expect, expect + 1);
++    }
++
++    /**
++     * Attempts to CAS-decrement the workerCount field of ctl.
++     */
++    private boolean compareAndDecrementWorkerCount(int expect) {
++        return ctl.compareAndSet(expect, expect - 1);
++    }
++
++    /**
++     * Decrements the workerCount field of ctl. This is called only on
++     * abrupt termination of a thread (see processWorkerExit). Other
++     * decrements are performed within getTask.
++     */
++    private void decrementWorkerCount() {
++        do {} while (! compareAndDecrementWorkerCount(ctl.get()));
++    }
++
++    /**
++     * The queue used for holding tasks and handing off to worker
++     * threads.  We do not require that workQueue.poll() returning
++     * null necessarily means that workQueue.isEmpty(), so rely
++     * solely on isEmpty to see if the queue is empty (which we must
++     * do for example when deciding whether to transition from
++     * SHUTDOWN to TIDYING).  This accommodates special-purpose
++     * queues such as DelayQueues for which poll() is allowed to
++     * return null even if it may later return non-null when delays
++     * expire.
++     */
++    private final BlockingQueue<Runnable> workQueue;
++
++    /**
++     * Lock held on access to workers set and related bookkeeping.
++     * While we could use a concurrent set of some sort, it turns out
++     * to be generally preferable to use a lock. Among the reasons is
++     * that this serializes interruptIdleWorkers, which avoids
++     * unnecessary interrupt storms, especially during shutdown.
++     * Otherwise exiting threads would concurrently interrupt those
++     * that have not yet interrupted. It also simplifies some of the
++     * associated statistics bookkeeping of largestPoolSize etc. We
++     * also hold mainLock on shutdown and shutdownNow, for the sake of
++     * ensuring workers set is stable while separately checking
++     * permission to interrupt and actually interrupting.
++     */
++    private final ReentrantLock mainLock = new ReentrantLock();
++
++    /**
++     * Set containing all worker threads in pool. Accessed only when
++     * holding mainLock.
++     */
++    private final HashSet<Worker> workers = new HashSet<Worker>();
++
++    /**
++     * Wait condition to support awaitTermination
++     */
++    private final Condition termination = mainLock.newCondition();
++
++    /**
++     * Tracks largest attained pool size. Accessed only under
++     * mainLock.
++     */
++    private int largestPoolSize;
++
++    /**
++     * Counter for completed tasks. Updated only on termination of
++     * worker threads. Accessed only under mainLock.
++     */
++    private long completedTaskCount;
++
++    /*
++     * All user control parameters are declared as volatiles so that
++     * ongoing actions are based on freshest values, but without need
++     * for locking, since no internal invariants depend on them
++     * changing synchronously with respect to other actions.
++     */
++
++    /**
++     * Factory for new threads. All threads are created using this
++     * factory (via method addWorker).  All callers must be prepared
++     * for addWorker to fail, which may reflect a system or user's
++     * policy limiting the number of threads.  Even though it is not
++     * treated as an error, failure to create threads may result in
++     * new tasks being rejected or existing ones remaining stuck in
++     * the queue.
++     *
++     * We go further and preserve pool invariants even in the face of
++     * errors such as OutOfMemoryError, that might be thrown while
++     * trying to create threads.  Such errors are rather common due to
++     * the need to allocate a native stack in Thread.start, and users
++     * will want to perform clean pool shutdown to clean up.  There
++     * will likely be enough memory available for the cleanup code to
++     * complete without encountering yet another OutOfMemoryError.
++     */
++    private volatile ThreadFactory threadFactory;
++
++    /**
++     * Handler called when saturated or shutdown in execute.
++     */
++    private volatile RejectedExecutionHandler handler;
++
++    /**
++     * Timeout in nanoseconds for idle threads waiting for work.
++     * Threads use this timeout when there are more than corePoolSize
++     * present or if allowCoreThreadTimeOut. Otherwise they wait
++     * forever for new work.
++     */
++    private volatile long keepAliveTime;
++
++    /**
++     * If false (default), core threads stay alive even when idle.
++     * If true, core threads use keepAliveTime to time out waiting
++     * for work.
++     */
++    private volatile boolean allowCoreThreadTimeOut;
++
++    /**
++     * Core pool size is the minimum number of workers to keep alive
++     * (and not allow to time out etc) unless allowCoreThreadTimeOut
++     * is set, in which case the minimum is zero.
++     */
++    private volatile int corePoolSize;
++
++    /**
++     * Maximum pool size. Note that the actual maximum is internally
++     * bounded by CAPACITY.
++     */
++    private volatile int maximumPoolSize;
++
++    /**
++     * The default rejected execution handler
++     */
++    private static final RejectedExecutionHandler defaultHandler =
++        new AbortPolicy();
++
++    /**
++     * Permission required for callers of shutdown and shutdownNow.
++     * We additionally require (see checkShutdownAccess) that callers
++     * have permission to actually interrupt threads in the worker set
++     * (as governed by Thread.interrupt, which relies on
++     * ThreadGroup.checkAccess, which in turn relies on
++     * SecurityManager.checkAccess). Shutdowns are attempted only if
++     * these checks pass.
++     *
++     * All actual invocations of Thread.interrupt (see
++     * interruptIdleWorkers and interruptWorkers) ignore
++     * SecurityExceptions, meaning that the attempted interrupts
++     * silently fail. In the case of shutdown, they should not fail
++     * unless the SecurityManager has inconsistent policies, sometimes
++     * allowing access to a thread and sometimes not. In such cases,
++     * failure to actually interrupt threads may disable or delay full
++     * termination. Other uses of interruptIdleWorkers are advisory,
++     * and failure to actually interrupt will merely delay response to
++     * configuration changes so is not handled exceptionally.
++     */
++    private static final RuntimePermission shutdownPerm =
++        new RuntimePermission("modifyThread");
++
++    /**
++     * Class Worker mainly maintains interrupt control state for
++     * threads running tasks, along with other minor bookkeeping.
++     * This class opportunistically extends AbstractQueuedSynchronizer
++     * to simplify acquiring and releasing a lock surrounding each
++     * task execution.  This protects against interrupts that are
++     * intended to wake up a worker thread waiting for a task from
++     * instead interrupting a task being run.  We implement a simple
++     * non-reentrant mutual exclusion lock rather than use
++     * ReentrantLock because we do not want worker tasks to be able to
++     * reacquire the lock when they invoke pool control methods like
++     * setCorePoolSize.  Additionally, to suppress interrupts until
++     * the thread actually starts running tasks, we initialize lock
++     * state to a negative value, and clear it upon start (in
++     * runWorker).
++     */
++    private final class Worker
++        extends AbstractQueuedSynchronizer
++        implements Runnable
++    {
++        /**
++         * This class will never be serialized, but we provide a
++         * serialVersionUID to suppress a javac warning.
++         */
++        private static final long serialVersionUID = 6138294804551838833L;
++
++        /** Thread this worker is running in.  Null if factory fails. */
++        final Thread thread;
++        /** Initial task to run.  Possibly null. */
++        Runnable firstTask;
++        /** Per-thread task counter */
++        volatile long completedTasks;
++
++        /**
++         * Creates with given first task and thread from ThreadFactory.
++         * @param firstTask the first task (null if none)
++         */
++        Worker(Runnable firstTask) {
++            setState(-1); // inhibit interrupts until runWorker
++            this.firstTask = firstTask;
++            this.thread = getThreadFactory().newThread(this);
++        }
++
++        /** Delegates main run loop to outer runWorker  */
++        public void run() {
++            runWorker(this);
++        }
++
++        // Lock methods
++        //
++        // The value 0 represents the unlocked state.
++        // The value 1 represents the locked state.
++
++        protected boolean isHeldExclusively() {
++            return getState() != 0;
++        }
++
++        protected boolean tryAcquire(int unused) {
++            if (compareAndSetState(0, 1)) {
++                setExclusiveOwnerThread(Thread.currentThread());
++                return true;
++            }
++            return false;
++        }
++
++        protected boolean tryRelease(int unused) {
++            setExclusiveOwnerThread(null);
++            setState(0);
++            return true;
++        }
++
++        public void lock()        { acquire(1); }
++        public boolean tryLock()  { return tryAcquire(1); }
++        public void unlock()      { release(1); }
++        public boolean isLocked() { return isHeldExclusively(); }
++
++        void interruptIfStarted() {
++            Thread t;
++            if (getState() >= 0 && (t = thread) != null && !t.isInterrupted()) {
++                try {
++                    t.interrupt();
++                } catch (SecurityException ignore) {
++                }
++            }
++        }
++    }
++
++    /*
++     * Methods for setting control state
++     */
++
++    /**
++     * Transitions runState to given target, or leaves it alone if
++     * already at least the given target.
++     *
++     * @param targetState the desired state, either SHUTDOWN or STOP
++     *        (but not TIDYING or TERMINATED -- use tryTerminate for that)
++     */
++    private void advanceRunState(int targetState) {
++        for (;;) {
++            int c = ctl.get();
++            if (runStateAtLeast(c, targetState) ||
++                ctl.compareAndSet(c, ctlOf(targetState, workerCountOf(c))))
++                break;
++        }
++    }
++
++    /**
++     * Transitions to TERMINATED state if either (SHUTDOWN and pool
++     * and queue empty) or (STOP and pool empty).  If otherwise
++     * eligible to terminate but workerCount is nonzero, interrupts an
++     * idle worker to ensure that shutdown signals propagate. This
++     * method must be called following any action that might make
++     * termination possible -- reducing worker count or removing tasks
++     * from the queue during shutdown. The method is non-private to
++     * allow access from ScheduledThreadPoolExecutor.
++     */
++    final void tryTerminate() {
++        for (;;) {
++            int c = ctl.get();
++            if (isRunning(c) ||
++                runStateAtLeast(c, TIDYING) ||
++                (runStateOf(c) == SHUTDOWN && ! workQueue.isEmpty()))
++                return;
++            if (workerCountOf(c) != 0) { // Eligible to terminate
++                interruptIdleWorkers(ONLY_ONE);
++                return;
++            }
++
++            final ReentrantLock mainLock = this.mainLock;
++            mainLock.lock();
++            try {
++                if (ctl.compareAndSet(c, ctlOf(TIDYING, 0))) {
++                    try {
++                        terminated();
++                    } finally {
++                        ctl.set(ctlOf(TERMINATED, 0));
++                        termination.signalAll();
++                    }
++                    return;
++                }
++            } finally {
++                mainLock.unlock();
++            }
++            // else retry on failed CAS
++        }
++    }
++
++    /*
++     * Methods for controlling interrupts to worker threads.
++     */
++
++    /**
++     * If there is a security manager, makes sure caller has
++     * permission to shut down threads in general (see shutdownPerm).
++     * If this passes, additionally makes sure the caller is allowed
++     * to interrupt each worker thread. This might not be true even if
++     * first check passed, if the SecurityManager treats some threads
++     * specially.
++     */
++    private void checkShutdownAccess() {
++        SecurityManager security = System.getSecurityManager();
++        if (security != null) {
++            security.checkPermission(shutdownPerm);
++            final ReentrantLock mainLock = this.mainLock;
++            mainLock.lock();
++            try {
++                for (Worker w : workers)
++                    security.checkAccess(w.thread);
++            } finally {
++                mainLock.unlock();
++            }
++        }
++    }
++
++    /**
++     * Interrupts all threads, even if active. Ignores SecurityExceptions
++     * (in which case some threads may remain uninterrupted).
++     */
++    private void interruptWorkers() {
++        final ReentrantLock mainLock = this.mainLock;
++        mainLock.lock();
++        try {
++            for (Worker w : workers)
++                w.interruptIfStarted();
++        } finally {
++            mainLock.unlock();
++        }
++    }
++
++    /**
++     * Interrupts threads that might be waiting for tasks (as
++     * indicated by not being locked) so they can check for
++     * termination or configuration changes. Ignores
++     * SecurityExceptions (in which case some threads may remain
++     * uninterrupted).
++     *
++     * @param onlyOne If true, interrupt at most one worker. This is
++     * called only from tryTerminate when termination is otherwise
++     * enabled but there are still other workers.  In this case, at
++     * most one waiting worker is interrupted to propagate shutdown
++     * signals in case all threads are currently waiting.
++     * Interrupting any arbitrary thread ensures that newly arriving
++     * workers since shutdown began will also eventually exit.
++     * To guarantee eventual termination, it suffices to always
++     * interrupt only one idle worker, but shutdown() interrupts all
++     * idle workers so that redundant workers exit promptly, not
++     * waiting for a straggler task to finish.
++     */
++    private void interruptIdleWorkers(boolean onlyOne) {
++        final ReentrantLock mainLock = this.mainLock;
++        mainLock.lock();
++        try {
++            for (Worker w : workers) {
++                Thread t = w.thread;
++                if (!t.isInterrupted() && w.tryLock()) {
++                    try {
++                        t.interrupt();
++                    } catch (SecurityException ignore) {
++                    } finally {
++                        w.unlock();
++                    }
++                }
++                if (onlyOne)
++                    break;
++            }
++        } finally {
++            mainLock.unlock();
++        }
++    }
++
++    /**
++     * Common form of interruptIdleWorkers, to avoid having to
++     * remember what the boolean argument means.
++     */
++    private void interruptIdleWorkers() {
++        interruptIdleWorkers(false);
++    }
++
++    private static final boolean ONLY_ONE = true;
++
++    /*
++     * Misc utilities, most of which are also exported to
++     * ScheduledThreadPoolExecutor
++     */
++
++    /**
++     * Invokes the rejected execution handler for the given command.
++     * Package-protected for use by ScheduledThreadPoolExecutor.
++     */
++    final void reject(Runnable command) {
++        handler.rejectedExecution(command, this);
++    }
++
++    /**
++     * Performs any further cleanup following run state transition on
++     * invocation of shutdown.  A no-op here, but used by
++     * ScheduledThreadPoolExecutor to cancel delayed tasks.
++     */
++    void onShutdown() {
++    }
++
++    /**
++     * State check needed by ScheduledThreadPoolExecutor to
++     * enable running tasks during shutdown.
++     *
++     * @param shutdownOK true if should return true if SHUTDOWN
++     */
++    final boolean isRunningOrShutdown(boolean shutdownOK) {
++        int rs = runStateOf(ctl.get());
++        return rs == RUNNING || (rs == SHUTDOWN && shutdownOK);
++    }
++
++    /**
++     * Drains the task queue into a new list, normally using
++     * drainTo. But if the queue is a DelayQueue or any other kind of
++     * queue for which poll or drainTo may fail to remove some
++     * elements, it deletes them one by one.
++     */
++    private List<Runnable> drainQueue() {
++        BlockingQueue<Runnable> q = workQueue;
++        ArrayList<Runnable> taskList = new ArrayList<Runnable>();
++        q.drainTo(taskList);
++        if (!q.isEmpty()) {
++            for (Runnable r : q.toArray(new Runnable[0])) {
++                if (q.remove(r))
++                    taskList.add(r);
++            }
++        }
++        return taskList;
++    }
++
++    /*
++     * Methods for creating, running and cleaning up after workers
++     */
++
++    /**
++     * Checks if a new worker can be added with respect to current
++     * pool state and the given bound (either core or maximum). If so,
++     * the worker count is adjusted accordingly, and, if possible, a
++     * new worker is created and started, running firstTask as its
++     * first task. This method returns false if the pool is stopped or
++     * eligible to shut down. It also returns false if the thread
++     * factory fails to create a thread when asked.  If the thread
++     * creation fails, either due to the thread factory returning
++     * null, or due to an exception (typically OutOfMemoryError in
++     * Thread.start()), we roll back cleanly.
++     *
++     * @param firstTask the task the new thread should run first (or
++     * null if none). Workers are created with an initial first task
++     * (in method execute()) to bypass queuing when there are fewer
++     * than corePoolSize threads (in which case we always start one),
++     * or when the queue is full (in which case we must bypass queue).
++     * Initially idle threads are usually created via
++     * prestartCoreThread or to replace other dying workers.
++     *
++     * @param core if true use corePoolSize as bound, else
++     * maximumPoolSize. (A boolean indicator is used here rather than a
++     * value to ensure reads of fresh values after checking other pool
++     * state).
++     * @return true if successful
++     */
++    private boolean addWorker(Runnable firstTask, boolean core) {
++        retry:
++        for (;;) {
++            int c = ctl.get();
++            int rs = runStateOf(c);
++
++            // Check if queue empty only if necessary.
++            if (rs >= SHUTDOWN &&
++                ! (rs == SHUTDOWN &&
++                   firstTask == null &&
++                   ! workQueue.isEmpty()))
++                return false;
++
++            for (;;) {
++                int wc = workerCountOf(c);
++                if (wc >= CAPACITY ||
++                    wc >= (core ? corePoolSize : maximumPoolSize))
++                    return false;
++                if (compareAndIncrementWorkerCount(c))
++                    break retry;
++                c = ctl.get();  // Re-read ctl
++                if (runStateOf(c) != rs)
++                    continue retry;
++                // else CAS failed due to workerCount change; retry inner loop
++            }
++        }
++
++        boolean workerStarted = false;
++        boolean workerAdded = false;
++        Worker w = null;
++        try {
++            w = new Worker(firstTask);
++            final Thread t = w.thread;
++            if (t != null) {
++                final ReentrantLock mainLock = this.mainLock;
++                mainLock.lock();
++                try {
++                    // Recheck while holding lock.
++                    // Back out on ThreadFactory failure or if
++                    // shut down before lock acquired.
++                    int rs = runStateOf(ctl.get());
++
++                    if (rs < SHUTDOWN ||
++                        (rs == SHUTDOWN && firstTask == null)) {
++                        if (t.isAlive()) // precheck that t is startable
++                            throw new IllegalThreadStateException();
++                        workers.add(w);
++                        int s = workers.size();
++                        if (s > largestPoolSize)
++                            largestPoolSize = s;
++                        workerAdded = true;
++                    }
++                } finally {
++                    mainLock.unlock();
++                }
++                if (workerAdded) {
++                    t.start();
++                    workerStarted = true;
++                }
++            }
++        } finally {
++            if (! workerStarted)
++                addWorkerFailed(w);
++        }
++        return workerStarted;
++    }
++
++    /**
++     * Rolls back the worker thread creation.
++     * - removes worker from workers, if present
++     * - decrements worker count
++     * - rechecks for termination, in case the existence of this
++     *   worker was holding up termination
++     */
++    private void addWorkerFailed(Worker w) {
++        final ReentrantLock mainLock = this.mainLock;
++        mainLock.lock();
++        try {
++            if (w != null)
++                workers.remove(w);
++            decrementWorkerCount();
++            tryTerminate();
++        } finally {
++            mainLock.unlock();
++        }
++    }
++
++    /**
++     * Performs cleanup and bookkeeping for a dying worker. Called
++     * only from worker threads. Unless completedAbruptly is set,
++     * assumes that workerCount has already been adjusted to account
++     * for exit.  This method removes thread from worker set, and
++     * possibly terminates the pool or replaces the worker if either
++     * it exited due to user task exception or if fewer than
++     * corePoolSize workers are running or queue is non-empty but
++     * there are no workers.
++     *
++     * @param w the worker
++     * @param completedAbruptly if the worker died due to user exception
++     */
++    private void processWorkerExit(Worker w, boolean completedAbruptly) {
++        if (completedAbruptly) // If abrupt, then workerCount wasn't adjusted
++            decrementWorkerCount();
++
++        final ReentrantLock mainLock = this.mainLock;
++        mainLock.lock();
++        try {
++            completedTaskCount += w.completedTasks;
++            workers.remove(w);
++        } finally {
++            mainLock.unlock();
++        }
++
++        tryTerminate();
++
++        int c = ctl.get();
++        if (runStateLessThan(c, STOP)) {
++            if (!completedAbruptly) {
++                int min = allowCoreThreadTimeOut ? 0 : corePoolSize;
++                if (min == 0 && ! workQueue.isEmpty())
++                    min = 1;
++                if (workerCountOf(c) >= min)
++                    return; // replacement not needed
++            }
++            addWorker(null, false);
++        }
++    }
++
++    /**
++     * Performs blocking or timed wait for a task, depending on
++     * current configuration settings, or returns null if this worker
++     * must exit because of any of:
++     * 1. There are more than maximumPoolSize workers (due to
++     *    a call to setMaximumPoolSize).
++     * 2. The pool is stopped.
++     * 3. The pool is shutdown and the queue is empty.
++     * 4. This worker timed out waiting for a task, and timed-out
++     *    workers are subject to termination (that is,
++     *    {@code allowCoreThreadTimeOut || workerCount > corePoolSize})
++     *    both before and after the timed wait, and if the queue is
++     *    non-empty, this worker is not the last thread in the pool.
++     *
++     * @return task, or null if the worker must exit, in which case
++     *         workerCount is decremented
++     */
++    private Runnable getTask() {
++        boolean timedOut = false; // Did the last poll() time out?
++
++        for (;;) {
++            int c = ctl.get();
++            int rs = runStateOf(c);
++
++            // Check if queue empty only if necessary.
++            if (rs >= SHUTDOWN && (rs >= STOP || workQueue.isEmpty())) {
++                decrementWorkerCount();
++                return null;
++            }
++
++            int wc = workerCountOf(c);
++
++            // Are workers subject to culling?
++            boolean timed = allowCoreThreadTimeOut || wc > corePoolSize;
++
++            if ((wc > maximumPoolSize || (timed && timedOut))
++                && (wc > 1 || workQueue.isEmpty())) {
++                if (compareAndDecrementWorkerCount(c))
++                    return null;
++                continue;
++            }
++
++            try {
++                Runnable r = timed ?
++                    workQueue.poll(keepAliveTime, TimeUnit.NANOSECONDS) :
++                    workQueue.take();
++                if (r != null)
++                    return r;
++                timedOut = true;
++            } catch (InterruptedException retry) {
++                timedOut = false;
++            }
++        }
++    }
++
++    /**
++     * Main worker run loop.  Repeatedly gets tasks from queue and
++     * executes them, while coping with a number of issues:
++     *
++     * 1. We may start out with an initial task, in which case we
++     * don't need to get the first one. Otherwise, as long as pool is
++     * running, we get tasks from getTask. If it returns null then the
++     * worker exits due to changed pool state or configuration
++     * parameters.  Other exits result from exception throws in
++     * external code, in which case completedAbruptly holds, which
++     * usually leads processWorkerExit to replace this thread.
++     *
++     * 2. Before running any task, the lock is acquired to prevent
++     * other pool interrupts while the task is executing, and then we
++     * ensure that unless pool is stopping, this thread does not have
++     * its interrupt set.
++     *
++     * 3. Each task run is preceded by a call to beforeExecute, which
++     * might throw an exception, in which case we cause thread to die
++     * (breaking loop with completedAbruptly true) without processing
++     * the task.
++     *
++     * 4. Assuming beforeExecute completes normally, we run the task,
++     * gathering any of its thrown exceptions to send to afterExecute.
++     * We separately handle RuntimeException, Error (both of which the
++     * specs guarantee that we trap) and arbitrary Throwables.
++     * Because we cannot rethrow Throwables within Runnable.run, we
++     * wrap them within Errors on the way out (to the thread's
++     * UncaughtExceptionHandler).  Any thrown exception also
++     * conservatively causes thread to die.
++     *
++     * 5. After task.run completes, we call afterExecute, which may
++     * also throw an exception, which will also cause thread to
++     * die. According to JLS Sec 14.20, this exception is the one that
++     * will be in effect even if task.run throws.
++     *
++     * The net effect of the exception mechanics is that afterExecute
++     * and the thread's UncaughtExceptionHandler have as accurate
++     * information as we can provide about any problems encountered by
++     * user code.
++     *
++     * @param w the worker
++     */
++    final void runWorker(Worker w) {
++        Thread wt = Thread.currentThread();
++        Runnable task = w.firstTask;
++        w.firstTask = null;
++        w.unlock(); // allow interrupts
++        boolean completedAbruptly = true;
++        try {
++            while (task != null || (task = getTask()) != null) {
++                w.lock();
++                // If pool is stopping, ensure thread is interrupted;
++                // if not, ensure thread is not interrupted.  This
++                // requires a recheck in second case to deal with
++                // shutdownNow race while clearing interrupt
++                if ((runStateAtLeast(ctl.get(), STOP) ||
++                     (Thread.interrupted() &&
++                      runStateAtLeast(ctl.get(), STOP))) &&
++                    !wt.isInterrupted())
++                    wt.interrupt();
++                try {
++                    beforeExecute(wt, task);
++                    Throwable thrown = null;
++                    try {
++                        task.run();
++                    } catch (RuntimeException x) {
++                        thrown = x; throw x;
++                    } catch (Error x) {
++                        thrown = x; throw x;
++                    } catch (Throwable x) {
++                        thrown = x; throw new Error(x);
++                    } finally {
++                        afterExecute(task, thrown);
++                    }
++                } finally {
++                    task = null;
++                    w.completedTasks++;
++                    w.unlock();
++                }
++            }
++            completedAbruptly = false;
++        } finally {
++            processWorkerExit(w, completedAbruptly);
++        }
++    }
++
++    // Public constructors and methods
++
++    /**
++     * Creates a new {@code ThreadPoolExecutor} with the given initial
++     * parameters and default thread factory and rejected execution handler.
++     * It may be more convenient to use one of the {@link Executors} factory
++     * methods instead of this general purpose constructor.
++     *
++     * @param corePoolSize the number of threads to keep in the pool, even
++     *        if they are idle, unless {@code allowCoreThreadTimeOut} is set
++     * @param maximumPoolSize the maximum number of threads to allow in the
++     *        pool
++     * @param keepAliveTime when the number of threads is greater than
++     *        the core, this is the maximum time that excess idle threads
++     *        will wait for new tasks before terminating.
++     * @param unit the time unit for the {@code keepAliveTime} argument
++     * @param workQueue the queue to use for holding tasks before they are
++     *        executed.  This queue will hold only the {@code Runnable}
++     *        tasks submitted by the {@code execute} method.
++     * @throws IllegalArgumentException if one of the following holds:<br>
++     *         {@code corePoolSize < 0}<br>
++     *         {@code keepAliveTime < 0}<br>
++     *         {@code maximumPoolSize <= 0}<br>
++     *         {@code maximumPoolSize < corePoolSize}
++     * @throws NullPointerException if {@code workQueue} is null
++     */
++    public SuspendableThreadPoolExecutor(int corePoolSize,
++                              int maximumPoolSize,
++                              long keepAliveTime,
++                              TimeUnit unit,
++                              BlockingQueue<Runnable> workQueue) {
++        this(corePoolSize, maximumPoolSize, keepAliveTime, unit, workQueue,
++             Executors.defaultThreadFactory(), defaultHandler);
++    }
++
++    /**
++     * Creates a new {@code ThreadPoolExecutor} with the given initial
++     * parameters and default rejected execution handler.
++     *
++     * @param corePoolSize the number of threads to keep in the pool, even
++     *        if they are idle, unless {@code allowCoreThreadTimeOut} is set
++     * @param maximumPoolSize the maximum number of threads to allow in the
++     *        pool
++     * @param keepAliveTime when the number of threads is greater than
++     *        the core, this is the maximum time that excess idle threads
++     *        will wait for new tasks before terminating.
++     * @param unit the time unit for the {@code keepAliveTime} argument
++     * @param workQueue the queue to use for holding tasks before they are
++     *        executed.  This queue will hold only the {@code Runnable}
++     *        tasks submitted by the {@code execute} method.
++     * @param threadFactory the factory to use when the executor
++     *        creates a new thread
++     * @throws IllegalArgumentException if one of the following holds:<br>
++     *         {@code corePoolSize < 0}<br>
++     *         {@code keepAliveTime < 0}<br>
++     *         {@code maximumPoolSize <= 0}<br>
++     *         {@code maximumPoolSize < corePoolSize}
++     * @throws NullPointerException if {@code workQueue}
++     *         or {@code threadFactory} is null
++     */
++    public SuspendableThreadPoolExecutor(int corePoolSize,
++                              int maximumPoolSize,
++                              long keepAliveTime,
++                              TimeUnit unit,
++                              BlockingQueue<Runnable> workQueue,
++                              ThreadFactory threadFactory) {
++        this(corePoolSize, maximumPoolSize, keepAliveTime, unit, workQueue,
++             threadFactory, defaultHandler);
++    }
++
++    /**
++     * Creates a new {@code ThreadPoolExecutor} with the given initial
++     * parameters and default thread factory.
++     *
++     * @param corePoolSize the number of threads to keep in the pool, even
++     *        if they are idle, unless {@code allowCoreThreadTimeOut} is set
++     * @param maximumPoolSize the maximum number of threads to allow in the
++     *        pool
++     * @param keepAliveTime when the number of threads is greater than
++     *        the core, this is the maximum time that excess idle threads
++     *        will wait for new tasks before terminating.
++     * @param unit the time unit for the {@code keepAliveTime} argument
++     * @param workQueue the queue to use for holding tasks before they are
++     *        executed.  This queue will hold only the {@code Runnable}
++     *        tasks submitted by the {@code execute} method.
++     * @param handler the handler to use when execution is blocked
++     *        because the thread bounds and queue capacities are reached
++     * @throws IllegalArgumentException if one of the following holds:<br>
++     *         {@code corePoolSize < 0}<br>
++     *         {@code keepAliveTime < 0}<br>
++     *         {@code maximumPoolSize <= 0}<br>
++     *         {@code maximumPoolSize < corePoolSize}
++     * @throws NullPointerException if {@code workQueue}
++     *         or {@code handler} is null
++     */
++    public SuspendableThreadPoolExecutor(int corePoolSize,
++                              int maximumPoolSize,
++                              long keepAliveTime,
++                              TimeUnit unit,
++                              BlockingQueue<Runnable> workQueue,
++                              RejectedExecutionHandler handler) {
++        this(corePoolSize, maximumPoolSize, keepAliveTime, unit, workQueue,
++             Executors.defaultThreadFactory(), handler);
++    }
++
++    /**
++     * Creates a new {@code ThreadPoolExecutor} with the given initial
++     * parameters.
++     *
++     * @param corePoolSize the number of threads to keep in the pool, even
++     *        if they are idle, unless {@code allowCoreThreadTimeOut} is set
++     * @param maximumPoolSize the maximum number of threads to allow in the
++     *        pool
++     * @param keepAliveTime when the number of threads is greater than
++     *        the core, this is the maximum time that excess idle threads
++     *        will wait for new tasks before terminating.
++     * @param unit the time unit for the {@code keepAliveTime} argument
++     * @param workQueue the queue to use for holding tasks before they are
++     *        executed.  This queue will hold only the {@code Runnable}
++     *        tasks submitted by the {@code execute} method.
++     * @param threadFactory the factory to use when the executor
++     *        creates a new thread
++     * @param handler the handler to use when execution is blocked
++     *        because the thread bounds and queue capacities are reached
++     * @throws IllegalArgumentException if one of the following holds:<br>
++     *         {@code corePoolSize < 0}<br>
++     *         {@code keepAliveTime < 0}<br>
++     *         {@code maximumPoolSize <= 0}<br>
++     *         {@code maximumPoolSize < corePoolSize}
++     * @throws NullPointerException if {@code workQueue}
++     *         or {@code threadFactory} or {@code handler} is null
++     */
++    public SuspendableThreadPoolExecutor(int corePoolSize,
++                              int maximumPoolSize,
++                              long keepAliveTime,
++                              TimeUnit unit,
++                              BlockingQueue<Runnable> workQueue,
++                              ThreadFactory threadFactory,
++                              RejectedExecutionHandler handler) {
++        super(corePoolSize, maximumPoolSize, keepAliveTime, unit, workQueue, threadFactory, handler);
++        if (corePoolSize < 0 ||
++            maximumPoolSize <= 0 ||
++            maximumPoolSize < corePoolSize ||
++            keepAliveTime < 0)
++            throw new IllegalArgumentException();
++        if (workQueue == null || threadFactory == null || handler == null)
++            throw new NullPointerException();
++        this.corePoolSize = corePoolSize;
++        this.maximumPoolSize = maximumPoolSize;
++        this.workQueue = workQueue;
++        this.keepAliveTime = unit.toNanos(keepAliveTime);
++        this.threadFactory = threadFactory;
++        this.handler = handler;
++    }
++
++    /**
++     * Executes the given task sometime in the future.  The task
++     * may execute in a new thread or in an existing pooled thread.
++     *
++     * If the task cannot be submitted for execution, either because this
++     * executor has been shutdown or because its capacity has been reached,
++     * the task is handled by the current {@code RejectedExecutionHandler}.
++     *
++     * @param command the task to execute
++     * @throws RejectedExecutionException at discretion of
++     *         {@code RejectedExecutionHandler}, if the task
++     *         cannot be accepted for execution
++     * @throws NullPointerException if {@code command} is null
++     */
++    public void execute(Runnable command) {
++        if (command == null)
++            throw new NullPointerException();
++        /*
++         * Proceed in 3 steps:
++         *
++         * 1. If fewer than corePoolSize threads are running, try to
++         * start a new thread with the given command as its first
++         * task.  The call to addWorker atomically checks runState and
++         * workerCount, and so prevents false alarms that would add
++         * threads when it shouldn't, by returning false.
++         *
++         * 2. If a task can be successfully queued, then we still need
++         * to double-check whether we should have added a thread
++         * (because existing ones died since last checking) or that
++         * the pool shut down since entry into this method. So we
++         * recheck state and if necessary roll back the enqueuing if
++         * stopped, or start a new thread if there are none.
++         *
++         * 3. If we cannot queue task, then we try to add a new
++         * thread.  If it fails, we know we are shut down or saturated
++         * and so reject the task.
++         */
++        int c = ctl.get();
++        if (workerCountOf(c) < corePoolSize) {
++            if (addWorker(command, true))
++                return;
++            c = ctl.get();
++        }
++        if (isRunning(c) && workQueue.offer(command)) {
++            int recheck = ctl.get();
++            if (! isRunning(recheck) && remove(command))
++                reject(command);
++            else if (workerCountOf(recheck) == 0)
++                addWorker(null, false);
++        }
++        else if (!addWorker(command, false))
++            reject(command);
++    }
++
++    /**
++     * Initiates an orderly shutdown in which previously submitted
++     * tasks are executed, but no new tasks will be accepted.
++     * Invocation has no additional effect if already shut down.
++     *
++     * <p>This method does not wait for previously submitted tasks to
++     * complete execution.  Use {@link #awaitTermination awaitTermination}
++     * to do that.
++     *
++     * @throws SecurityException {@inheritDoc}
++     */
++    public void shutdown() {
++        final ReentrantLock mainLock = this.mainLock;
++        mainLock.lock();
++        try {
++            checkShutdownAccess();
++            advanceRunState(SHUTDOWN);
++            interruptIdleWorkers();
++            onShutdown(); // hook for ScheduledThreadPoolExecutor
++        } finally {
++            mainLock.unlock();
++        }
++        tryTerminate();
++    }
++
++    /**
++     * Attempts to stop all actively executing tasks, halts the
++     * processing of waiting tasks, and returns a list of the tasks
++     * that were awaiting execution. These tasks are drained (removed)
++     * from the task queue upon return from this method.
++     *
++     * <p>This method does not wait for actively executing tasks to
++     * terminate.  Use {@link #awaitTermination awaitTermination} to
++     * do that.
++     *
++     * <p>There are no guarantees beyond best-effort attempts to stop
++     * processing actively executing tasks.  This implementation
++     * cancels tasks via {@link Thread#interrupt}, so any task that
++     * fails to respond to interrupts may never terminate.
++     *
++     * @throws SecurityException {@inheritDoc}
++     */
++    public List<Runnable> shutdownNow() {
++        List<Runnable> tasks;
++        final ReentrantLock mainLock = this.mainLock;
++        mainLock.lock();
++        try {
++            checkShutdownAccess();
++            advanceRunState(STOP);
++            interruptWorkers();
++            tasks = drainQueue();
++        } finally {
++            mainLock.unlock();
++        }
++        tryTerminate();
++        return tasks;
++    }
++
++    public boolean isShutdown() {
++        return ! isRunning(ctl.get());
++    }
++
++    /**
++     * Returns true if this executor is in the process of terminating
++     * after {@link #shutdown} or {@link #shutdownNow} but has not
++     * completely terminated.  This method may be useful for
++     * debugging. A return of {@code true} reported a sufficient
++     * period after shutdown may indicate that submitted tasks have
++     * ignored or suppressed interruption, causing this executor not
++     * to properly terminate.
++     *
++     * @return {@code true} if terminating but not yet terminated
++     */
++    public boolean isTerminating() {
++        int c = ctl.get();
++        return ! isRunning(c) && runStateLessThan(c, TERMINATED);
++    }
++
++    public boolean isTerminated() {
++        return runStateAtLeast(ctl.get(), TERMINATED);
++    }
++
++    public boolean awaitTermination(long timeout, TimeUnit unit)
++        throws InterruptedException {
++        long nanos = unit.toNanos(timeout);
++        final ReentrantLock mainLock = this.mainLock;
++        mainLock.lock();
++        try {
++            for (;;) {
++                if (runStateAtLeast(ctl.get(), TERMINATED))
++                    return true;
++                if (nanos <= 0)
++                    return false;
++                nanos = termination.awaitNanos(nanos);
++            }
++        } finally {
++            mainLock.unlock();
++        }
++    }
++
++    /**
++     * Invokes {@code shutdown} when this executor is no longer
++     * referenced and it has no threads.
++     */
++    protected void finalize() {
++        shutdown();
++    }
++
++    /**
++     * Sets the thread factory used to create new threads.
++     *
++     * @param threadFactory the new thread factory
++     * @throws NullPointerException if threadFactory is null
++     * @see #getThreadFactory
++     */
++    public void setThreadFactory(ThreadFactory threadFactory) {
++        if (threadFactory == null)
++            throw new NullPointerException();
++        this.threadFactory = threadFactory;
++    }
++
++    /**
++     * Returns the thread factory used to create new threads.
++     *
++     * @return the current thread factory
++     * @see #setThreadFactory(ThreadFactory)
++     */
++    public ThreadFactory getThreadFactory() {
++        return threadFactory;
++    }
++
++    /**
++     * Sets a new handler for unexecutable tasks.
++     *
++     * @param handler the new handler
++     * @throws NullPointerException if handler is null
++     * @see #getRejectedExecutionHandler
++     */
++    public void setRejectedExecutionHandler(RejectedExecutionHandler handler) {
++        if (handler == null)
++            throw new NullPointerException();
++        this.handler = handler;
++    }
++
++    /**
++     * Returns the current handler for unexecutable tasks.
++     *
++     * @return the current handler
++     * @see #setRejectedExecutionHandler(RejectedExecutionHandler)
++     */
++    public RejectedExecutionHandler getRejectedExecutionHandler() {
++        return handler;
++    }
++
++    /**
++     * Sets the core number of threads.  This overrides any value set
++     * in the constructor.  If the new value is smaller than the
++     * current value, excess existing threads will be terminated when
++     * they next become idle.  If larger, new threads will, if needed,
++     * be started to execute any queued tasks.
++     *
++     * @param corePoolSize the new core size
++     * @throws IllegalArgumentException if {@code corePoolSize < 0}
++     * @see #getCorePoolSize
++     */
++    public void setCorePoolSize(int corePoolSize) {
++        if (corePoolSize < 0)
++            throw new IllegalArgumentException();
++        int delta = corePoolSize - this.corePoolSize;
++        this.corePoolSize = corePoolSize;
++        if (workerCountOf(ctl.get()) > corePoolSize)
++            interruptIdleWorkers();
++        else if (delta > 0) {
++            // We don't really know how many new threads are "needed".
++            // As a heuristic, prestart enough new workers (up to new
++            // core size) to handle the current number of tasks in
++            // queue, but stop if queue becomes empty while doing so.
++            int k = Math.min(delta, workQueue.size());
++            while (k-- > 0 && addWorker(null, true)) {
++                if (workQueue.isEmpty())
++                    break;
++            }
++        }
++    }
++
++    /**
++     * Returns the core number of threads.
++     *
++     * @return the core number of threads
++     * @see #setCorePoolSize
++     */
++    public int getCorePoolSize() {
++        return corePoolSize;
++    }
++
++    /**
++     * Starts a core thread, causing it to idly wait for work. This
++     * overrides the default policy of starting core threads only when
++     * new tasks are executed. This method will return {@code false}
++     * if all core threads have already been started.
++     *
++     * @return {@code true} if a thread was started
++     */
++    public boolean prestartCoreThread() {
++        return workerCountOf(ctl.get()) < corePoolSize &&
++            addWorker(null, true);
++    }
++
++    /**
++     * Same as prestartCoreThread except arranges that at least one
++     * thread is started even if corePoolSize is 0.
++     */
++    void ensurePrestart() {
++        int wc = workerCountOf(ctl.get());
++        if (wc < corePoolSize)
++            addWorker(null, true);
++        else if (wc == 0)
++            addWorker(null, false);
++    }
++
++    /**
++     * Starts all core threads, causing them to idly wait for work. This
++     * overrides the default policy of starting core threads only when
++     * new tasks are executed.
++     *
++     * @return the number of threads started
++     */
++    public int prestartAllCoreThreads() {
++        int n = 0;
++        while (addWorker(null, true))
++            ++n;
++        return n;
++    }
++
++    /**
++     * Returns true if this pool allows core threads to time out and
++     * terminate if no tasks arrive within the keepAlive time, being
++     * replaced if needed when new tasks arrive. When true, the same
++     * keep-alive policy applying to non-core threads applies also to
++     * core threads. When false (the default), core threads are never
++     * terminated due to lack of incoming tasks.
++     *
++     * @return {@code true} if core threads are allowed to time out,
++     *         else {@code false}
++     *
++     * @since 1.6
++     */
++    public boolean allowsCoreThreadTimeOut() {
++        return allowCoreThreadTimeOut;
++    }
++
++    /**
++     * Sets the policy governing whether core threads may time out and
++     * terminate if no tasks arrive within the keep-alive time, being
++     * replaced if needed when new tasks arrive. When false, core
++     * threads are never terminated due to lack of incoming
++     * tasks. When true, the same keep-alive policy applying to
++     * non-core threads applies also to core threads. To avoid
++     * continual thread replacement, the keep-alive time must be
++     * greater than zero when setting {@code true}. This method
++     * should in general be called before the pool is actively used.
++     *
++     * @param value {@code true} if should time out, else {@code false}
++     * @throws IllegalArgumentException if value is {@code true}
++     *         and the current keep-alive time is not greater than zero
++     *
++     * @since 1.6
++     */
++    public void allowCoreThreadTimeOut(boolean value) {
++        if (value && keepAliveTime <= 0)
++            throw new IllegalArgumentException("Core threads must have nonzero keep alive times");
++        if (value != allowCoreThreadTimeOut) {
++            allowCoreThreadTimeOut = value;
++            if (value)
++                interruptIdleWorkers();
++        }
++    }
++
++    /**
++     * Sets the maximum allowed number of threads. This overrides any
++     * value set in the constructor. If the new value is smaller than
++     * the current value, excess existing threads will be
++     * terminated when they next become idle.
++     *
++     * @param maximumPoolSize the new maximum
++     * @throws IllegalArgumentException if the new maximum is
++     *         less than or equal to zero, or
++     *         less than the {@linkplain #getCorePoolSize core pool size}
++     * @see #getMaximumPoolSize
++     */
++    public void setMaximumPoolSize(int maximumPoolSize) {
++        if (maximumPoolSize <= 0 || maximumPoolSize < corePoolSize)
++            throw new IllegalArgumentException();
++        this.maximumPoolSize = maximumPoolSize;
++        if (workerCountOf(ctl.get()) > maximumPoolSize)
++            interruptIdleWorkers();
++    }
++
++    /**
++     * Returns the maximum allowed number of threads.
++     *
++     * @return the maximum allowed number of threads
++     * @see #setMaximumPoolSize
++     */
++    public int getMaximumPoolSize() {
++        return maximumPoolSize;
++    }
++
++    /**
++     * Sets the time limit for which threads may remain idle before
++     * being terminated.  If there are more than the core number of
++     * threads currently in the pool, after waiting this amount of
++     * time without processing a task, excess threads will be
++     * terminated.  This overrides any value set in the constructor.
++     *
++     * @param time the time to wait.  A time value of zero will cause
++     *        excess threads to terminate immediately after executing tasks.
++     * @param unit the time unit of the {@code time} argument
++     * @throws IllegalArgumentException if {@code time} less than zero or
++     *         if {@code time} is zero and {@code allowsCoreThreadTimeOut}
++     * @see #getKeepAliveTime(TimeUnit)
++     */
++    public void setKeepAliveTime(long time, TimeUnit unit) {
++        if (time < 0)
++            throw new IllegalArgumentException();
++        if (time == 0 && allowsCoreThreadTimeOut())
++            throw new IllegalArgumentException("Core threads must have nonzero keep alive times");
++        long keepAliveTime = unit.toNanos(time);
++        long delta = keepAliveTime - this.keepAliveTime;
++        this.keepAliveTime = keepAliveTime;
++        if (delta < 0)
++            interruptIdleWorkers();
++    }
++
++    /**
++     * Returns the thread keep-alive time, which is the amount of time
++     * that threads in excess of the core pool size may remain
++     * idle before being terminated.
++     *
++     * @param unit the desired time unit of the result
++     * @return the time limit
++     * @see #setKeepAliveTime(long, TimeUnit)
++     */
++    public long getKeepAliveTime(TimeUnit unit) {
++        return unit.convert(keepAliveTime, TimeUnit.NANOSECONDS);
++    }
++
++    /* User-level queue utilities */
++
++    /**
++     * Returns the task queue used by this executor. Access to the
++     * task queue is intended primarily for debugging and monitoring.
++     * This queue may be in active use.  Retrieving the task queue
++     * does not prevent queued tasks from executing.
++     *
++     * @return the task queue
++     */
++    public BlockingQueue<Runnable> getQueue() {
++        return workQueue;
++    }
++
++    /**
++     * Removes this task from the executor's internal queue if it is
++     * present, thus causing it not to be run if it has not already
++     * started.
++     *
++     * <p>This method may be useful as one part of a cancellation
++     * scheme.  It may fail to remove tasks that have been converted
++     * into other forms before being placed on the internal queue. For
++     * example, a task entered using {@code submit} might be
++     * converted into a form that maintains {@code Future} status.
++     * However, in such cases, method {@link #purge} may be used to
++     * remove those Futures that have been cancelled.
++     *
++     * @param task the task to remove
++     * @return {@code true} if the task was removed
++     */
++    public boolean remove(Runnable task) {
++        boolean removed = workQueue.remove(task);
++        tryTerminate(); // In case SHUTDOWN and now empty
++        return removed;
++    }
++
++    /**
++     * Tries to remove from the work queue all {@link Future}
++     * tasks that have been cancelled. This method can be useful as a
++     * storage reclamation operation, that has no other impact on
++     * functionality. Cancelled tasks are never executed, but may
++     * accumulate in work queues until worker threads can actively
++     * remove them. Invoking this method instead tries to remove them now.
++     * However, this method may fail to remove tasks in
++     * the presence of interference by other threads.
++     */
++    public void purge() {
++        final BlockingQueue<Runnable> q = workQueue;
++        try {
++            Iterator<Runnable> it = q.iterator();
++            while (it.hasNext()) {
++                Runnable r = it.next();
++                if (r instanceof Future<?> && ((Future<?>)r).isCancelled())
++                    it.remove();
++            }
++        } catch (ConcurrentModificationException fallThrough) {
++            // Take slow path if we encounter interference during traversal.
++            // Make copy for traversal and call remove for cancelled entries.
++            // The slow path is more likely to be O(N*N).
++            for (Object r : q.toArray())
++                if (r instanceof Future<?> && ((Future<?>)r).isCancelled())
++                    q.remove(r);
++        }
++
++        tryTerminate(); // In case SHUTDOWN and now empty
++    }
++
++    /* Statistics */
++
++    /**
++     * Returns the current number of threads in the pool.
++     *
++     * @return the number of threads
++     */
++    public int getPoolSize() {
++        final ReentrantLock mainLock = this.mainLock;
++        mainLock.lock();
++        try {
++            // Remove rare and surprising possibility of
++            // isTerminated() && getPoolSize() > 0
++            return runStateAtLeast(ctl.get(), TIDYING) ? 0
++                : workers.size();
++        } finally {
++            mainLock.unlock();
++        }
++    }
++
++    /**
++     * Returns the approximate number of threads that are actively
++     * executing tasks.
++     *
++     * @return the number of threads
++     */
++    public int getActiveCount() {
++        final ReentrantLock mainLock = this.mainLock;
++        mainLock.lock();
++        try {
++            int n = 0;
++            for (Worker w : workers)
++                if (w.isLocked())
++                    ++n;
++            return n;
++        } finally {
++            mainLock.unlock();
++        }
++    }
++
++    /**
++     * Returns the largest number of threads that have ever
++     * simultaneously been in the pool.
++     *
++     * @return the number of threads
++     */
++    public int getLargestPoolSize() {
++        final ReentrantLock mainLock = this.mainLock;
++        mainLock.lock();
++        try {
++            return largestPoolSize;
++        } finally {
++            mainLock.unlock();
++        }
++    }
++
++    /**
++     * Returns the approximate total number of tasks that have ever been
++     * scheduled for execution. Because the states of tasks and
++     * threads may change dynamically during computation, the returned
++     * value is only an approximation.
++     *
++     * @return the number of tasks
++     */
++    public long getTaskCount() {
++        final ReentrantLock mainLock = this.mainLock;
++        mainLock.lock();
++        try {
++            long n = completedTaskCount;
++            for (Worker w : workers) {
++                n += w.completedTasks;
++                if (w.isLocked())
++                    ++n;
++            }
++            return n + workQueue.size();
++        } finally {
++            mainLock.unlock();
++        }
++    }
++
++    /**
++     * Returns the approximate total number of tasks that have
++     * completed execution. Because the states of tasks and threads
++     * may change dynamically during computation, the returned value
++     * is only an approximation, but one that does not ever decrease
++     * across successive calls.
++     *
++     * @return the number of tasks
++     */
++    public long getCompletedTaskCount() {
++        final ReentrantLock mainLock = this.mainLock;
++        mainLock.lock();
++        try {
++            long n = completedTaskCount;
++            for (Worker w : workers)
++                n += w.completedTasks;
++            return n;
++        } finally {
++            mainLock.unlock();
++        }
++    }
++
++    /**
++     * Returns a string identifying this pool, as well as its state,
++     * including indications of run state and estimated worker and
++     * task counts.
++     *
++     * @return a string identifying this pool, as well as its state
++     */
++    public String toString() {
++        long ncompleted;
++        int nworkers, nactive;
++        final ReentrantLock mainLock = this.mainLock;
++        mainLock.lock();
++        try {
++            ncompleted = completedTaskCount;
++            nactive = 0;
++            nworkers = workers.size();
++            for (Worker w : workers) {
++                ncompleted += w.completedTasks;
++                if (w.isLocked())
++                    ++nactive;
++            }
++        } finally {
++            mainLock.unlock();
++        }
++        int c = ctl.get();
++        String rs = (runStateLessThan(c, SHUTDOWN) ? "Running" :
++                     (runStateAtLeast(c, TERMINATED) ? "Terminated" :
++                      "Shutting down"));
++        return super.toString() +
++            "[" + rs +
++            ", pool size = " + nworkers +
++            ", active threads = " + nactive +
++            ", queued tasks = " + workQueue.size() +
++            ", completed tasks = " + ncompleted +
++            "]";
++    }
++
++    /* Extension hooks */
++
++    /**
++     * Method invoked prior to executing the given Runnable in the
++     * given thread.  This method is invoked by thread {@code t} that
++     * will execute task {@code r}, and may be used to re-initialize
++     * ThreadLocals, or to perform logging.
++     *
++     * <p>This implementation does nothing, but may be customized in
++     * subclasses. Note: To properly nest multiple overridings, subclasses
++     * should generally invoke {@code super.beforeExecute} at the end of
++     * this method.
++     *
++     * @param t the thread that will run task {@code r}
++     * @param r the task that will be executed
++     */
++    protected void beforeExecute(Thread t, Runnable r) { }
++
++    /**
++     * Method invoked upon completion of execution of the given Runnable.
++     * This method is invoked by the thread that executed the task. If
++     * non-null, the Throwable is the uncaught {@code RuntimeException}
++     * or {@code Error} that caused execution to terminate abruptly.
++     *
++     * <p>This implementation does nothing, but may be customized in
++     * subclasses. Note: To properly nest multiple overridings, subclasses
++     * should generally invoke {@code super.afterExecute} at the
++     * beginning of this method.
++     *
++     * <p><b>Note:</b> When actions are enclosed in tasks (such as
++     * {@link FutureTask}) either explicitly or via methods such as
++     * {@code submit}, these task objects catch and maintain
++     * computational exceptions, and so they do not cause abrupt
++     * termination, and the internal exceptions are <em>not</em>
++     * passed to this method. If you would like to trap both kinds of
++     * failures in this method, you can further probe for such cases,
++     * as in this sample subclass that prints either the direct cause
++     * or the underlying exception if a task has been aborted:
++     *
++     *  <pre> {@code
++     * class ExtendedExecutor extends ThreadPoolExecutor {
++     *   // ...
++     *   protected void afterExecute(Runnable r, Throwable t) {
++     *     super.afterExecute(r, t);
++     *     if (t == null && r instanceof Future<?>) {
++     *       try {
++     *         Object result = ((Future<?>) r).get();
++     *       } catch (CancellationException ce) {
++     *           t = ce;
++     *       } catch (ExecutionException ee) {
++     *           t = ee.getCause();
++     *       } catch (InterruptedException ie) {
++     *           Thread.currentThread().interrupt(); // ignore/reset
++     *       }
++     *     }
++     *     if (t != null)
++     *       System.out.println(t);
++     *   }
++     * }}</pre>
++     *
++     * @param r the runnable that has completed
++     * @param t the exception that caused termination, or null if
++     * execution completed normally
++     */
++    protected void afterExecute(Runnable r, Throwable t) { }
++
++    /**
++     * Method invoked when the Executor has terminated.  Default
++     * implementation does nothing. Note: To properly nest multiple
++     * overridings, subclasses should generally invoke
++     * {@code super.terminated} within this method.
++     */
++    protected void terminated() { }
++
++    /* Predefined RejectedExecutionHandlers */
++
++    /**
++     * A handler for rejected tasks that runs the rejected task
++     * directly in the calling thread of the {@code execute} method,
++     * unless the executor has been shut down, in which case the task
++     * is discarded.
++     */
++    public static class CallerRunsPolicy implements RejectedExecutionHandler {
++        /**
++         * Creates a {@code CallerRunsPolicy}.
++         */
++        public CallerRunsPolicy() { }
++
++        /**
++         * Executes task r in the caller's thread, unless the executor
++         * has been shut down, in which case the task is discarded.
++         *
++         * @param r the runnable task requested to be executed
++         * @param e the executor attempting to execute this task
++         */
++        public void rejectedExecution(Runnable r, ThreadPoolExecutor e) {
++            if (!e.isShutdown()) {
++                r.run();
++            }
++        }
++    }
++
++    /**
++     * A handler for rejected tasks that throws a
++     * {@code RejectedExecutionException}.
++     */
++    public static class AbortPolicy implements RejectedExecutionHandler {
++        /**
++         * Creates an {@code AbortPolicy}.
++         */
++        public AbortPolicy() { }
++
++        /**
++         * Always throws RejectedExecutionException.
++         *
++         * @param r the runnable task requested to be executed
++         * @param e the executor attempting to execute this task
++         * @throws RejectedExecutionException always
++         */
++        public void rejectedExecution(Runnable r, ThreadPoolExecutor e) {
++            throw new RejectedExecutionException("Task " + r.toString() +
++                                                 " rejected from " +
++                                                 e.toString());
++        }
++    }
++
++    /**
++     * A handler for rejected tasks that silently discards the
++     * rejected task.
++     */
++    public static class DiscardPolicy implements RejectedExecutionHandler {
++        /**
++         * Creates a {@code DiscardPolicy}.
++         */
++        public DiscardPolicy() { }
++
++        /**
++         * Does nothing, which has the effect of discarding task r.
++         *
++         * @param r the runnable task requested to be executed
++         * @param e the executor attempting to execute this task
++         */
++        public void rejectedExecution(Runnable r, ThreadPoolExecutor e) {
++        }
++    }
++
++    /**
++     * A handler for rejected tasks that discards the oldest unhandled
++     * request and then retries {@code execute}, unless the executor
++     * is shut down, in which case the task is discarded.
++     */
++    public static class DiscardOldestPolicy implements RejectedExecutionHandler {
++        /**
++         * Creates a {@code DiscardOldestPolicy} for the given executor.
++         */
++        public DiscardOldestPolicy() { }
++
++        /**
++         * Obtains and ignores the next task that the executor
++         * would otherwise execute, if one is immediately available,
++         * and then retries execution of task r, unless the executor
++         * is shut down, in which case task r is instead discarded.
++         *
++         * @param r the runnable task requested to be executed
++         * @param e the executor attempting to execute this task
++         */
++        public void rejectedExecution(Runnable r, ThreadPoolExecutor e) {
++            if (!e.isShutdown()) {
++                e.getQueue().poll();
++                e.execute(r);
++            }
++        }
++    }
++}
+diff --git a/src/main/java/io/akarin/server/core/AkarinGlobalConfig.java b/src/main/java/io/akarin/server/core/AkarinGlobalConfig.java
+new file mode 100644
+index 000000000..4abecb100
+--- /dev/null
++++ b/src/main/java/io/akarin/server/core/AkarinGlobalConfig.java
+@@ -0,0 +1,265 @@
++package io.akarin.server.core;
++
++import com.google.common.base.Throwables;
++import com.google.common.collect.Lists;
++
++import io.akarin.api.internal.Akari;
++
++import java.io.File;
++import java.io.IOException;
++import java.lang.reflect.InvocationTargetException;
++import java.lang.reflect.Method;
++import java.lang.reflect.Modifier;
++import java.util.List;
++import java.util.concurrent.TimeUnit;
++import java.util.regex.Pattern;
++
++import org.bukkit.configuration.InvalidConfigurationException;
++import org.bukkit.configuration.file.YamlConfiguration;
++
++@SuppressWarnings("unused")
++public class AkarinGlobalConfig {
++    
++    private static File CONFIG_FILE;
++    private static final String HEADER = "This is the global configuration file for Akarin.\n"
++            + "Some options may impact gameplay, so use with caution,\n"
++            + "and make sure you know what each option does before configuring.\n"
++            + "\n"
++            + "Akarin forums: https://akarin.io/ \n";
++    /*========================================================================*/
++    public static YamlConfiguration config;
++    static int version;
++    /*========================================================================*/
++    public static void init(File configFile) {
++        CONFIG_FILE = configFile;
++        config = new YamlConfiguration();
++        try { 
++            config.load(CONFIG_FILE);
++        } catch (IOException ex) {
++        } catch (InvalidConfigurationException ex) {
++            Akari.logger.error("Could not load akarin.yml, please correct your syntax errors", ex);
++            throw Throwables.propagate(ex);
++        }
++        config.options().header(HEADER);
++        config.options().copyDefaults(true);
++
++        version = getInt("config-version", 1);
++        set("config-version", 1);
++        readConfig(AkarinGlobalConfig.class, null);
++    }
++
++    static void readConfig(Class<?> clazz, Object instance) {
++        for (Method method : clazz.getDeclaredMethods()) {
++            if (Modifier.isPrivate(method.getModifiers())) {
++                if (method.getParameterTypes().length == 0 && method.getReturnType() == Void.TYPE) {
++                    try {
++                        method.setAccessible(true);
++                        method.invoke(instance);
++                    } catch (InvocationTargetException ex) {
++                        throw Throwables.propagate(ex.getCause());
++                    } catch (Exception ex) {
++                        Akari.logger.error("Error invoking " + method, ex);
++                    }
++                }
++            }
++        }
++
++        try {
++            config.save(CONFIG_FILE);
++        } catch (IOException ex) {
++            Akari.logger.error("Could not save " + CONFIG_FILE, ex);
++        }
++    }
++
++    private static final Pattern SPACE = Pattern.compile(" ");
++    private static final Pattern NOT_NUMERIC = Pattern.compile("[^-\\d.]");
++    public static int getSeconds(String str) {
++        str = SPACE.matcher(str).replaceAll("");
++        final char unit = str.charAt(str.length() - 1);
++        str = NOT_NUMERIC.matcher(str).replaceAll("");
++        double num;
++        try {
++            num = Double.parseDouble(str);
++        } catch (Exception e) {
++            num = 0D;
++        }
++        switch (unit) {
++            case 'd': num *= (double) 60*60*24; break;
++            case 'h': num *= (double) 60*60; break;
++            case 'm': num *= 60; break;
++            default: case 's': break;
++        }
++        return (int) num;
++    }
++
++    protected static String timeSummary(int seconds) {
++        String time = "";
++
++        if (seconds > 60 * 60 * 24) {
++            time += TimeUnit.SECONDS.toDays(seconds) + "d";
++            seconds %= 60 * 60 * 24;
++        }
++
++        if (seconds > 60 * 60) {
++            time += TimeUnit.SECONDS.toHours(seconds) + "h";
++            seconds %= 60 * 60;
++        }
++
++        if (seconds > 0) {
++            time += TimeUnit.SECONDS.toMinutes(seconds) + "m";
++        }
++        return time;
++    }
++
++    public static void set(String path, Object val) {
++        config.set(path, val);
++    }
++
++    private static boolean getBoolean(String path, boolean def) {
++        config.addDefault(path, def);
++        return config.getBoolean(path, config.getBoolean(path));
++    }
++
++    private static double getDouble(String path, double def) {
++        config.addDefault(path, def);
++        return config.getDouble(path, config.getDouble(path));
++    }
++
++    private static float getFloat(String path, float def) {
++        // TODO: Figure out why getFloat() always returns the default value.
++        return (float) getDouble(path, def);
++    }
++
++    private static int getInt(String path, int def) {
++        config.addDefault(path, def);
++        return config.getInt(path, config.getInt(path));
++    }
++
++    private static <T> List getList(String path, T def) {
++        config.addDefault(path, def);
++        return config.getList(path, config.getList(path));
++    }
++
++    private static String getString(String path, String def) {
++        config.addDefault(path, def);
++        return config.getString(path, config.getString(path));
++    }
++    /*========================================================================*/
++    public static List<String> extraAddress;
++    private static void extraAddress() {
++        extraAddress = getList("bootstrap.extra-local-address", Lists.newArrayList());
++    }
++    
++    public static boolean legacyVersioningCompat;
++    private static void legacyVersioningCompat() {
++        legacyVersioningCompat = getBoolean("alternative.legacy-versioning-compat", false);
++    }
++    
++    public static int playersPerIOThread;
++    private static void playersPerIOThread() {
++        playersPerIOThread = getInt("core.players-per-chunk-io-thread", 50);
++    }
++    
++    public static boolean silentAsyncTimings;
++    private static void silentAsyncTimings() {
++        silentAsyncTimings = getBoolean("core.always-silent-async-timing", false);
++    }
++    
++    public static long timeUpdateInterval;
++    private static void timeUpdateInterval() {
++        timeUpdateInterval = getSeconds(getString("core.tick-rate.world-time-update-interval", "1s")) * 10;
++    }
++    
++    public static long keepAliveSendInterval;
++    private static void keepAliveSendInterval() {
++        keepAliveSendInterval = getSeconds(getString("core.tick-rate.keep-alive-packet-send-interval", "15s")) * 1000;
++    }
++    
++    public static long keepAliveTimeout;
++    private static void keepAliveTimeout() {
++        keepAliveTimeout = getSeconds(getString("core.keep-alive-response-timeout", "30s")) * 1000;
++    }
++    
++    public static boolean throwOnAsyncCaught;
++    private static void throwOnAsyncCaught() {
++        throwOnAsyncCaught = getBoolean("core.thread-safe.async-catcher.throw-on-caught", true);
++    }
++    
++    public static boolean allowSpawnerModify;
++    private static void allowSpawnerModify() {
++        allowSpawnerModify = getBoolean("alternative.allow-spawner-modify", true);
++    }
++    
++    public static boolean noResponseDoGC;
++    private static void noResponseDoGC() {
++        noResponseDoGC = getBoolean("alternative.gc-before-stuck-restart", true);
++    }
++    
++    public static String messageKick;
++    public static String messageBan;
++    public static String messageBanReason;
++    public static String messageBanExpires;
++    public static String messageBanIp;
++    public static String messageDupLogin;
++    public static String messageJoin;
++    public static String messageJoinRenamed;
++    public static String messageKickKeepAlive;
++    public static String messagePlayerQuit;
++    private static void messagekickKeepAlive() {
++        messageKick = getString("messages.disconnect.kick-player", "Kicked by an operator.");
++        messageBan = getString("messages.disconnect.ban-player-name", "You are banned from this server! %s %s");
++        messageBanReason = getString("messages.disconnect.ban-reason", "\nReason: ");
++        messageBanExpires = getString("messages.disconnect.ban-expires", "\nYour ban will be removed on ");
++        messageBanIp = getString("messages.disconnect.ban-player-ip", "Your IP address is banned from this server! %s %s");
++        messageDupLogin = getString("messages.disconnect.kick-player-duplicate-login", "You logged in from another location");
++        messageJoin = getString("messages.connect.player-join-server", "§e%s joined the game");
++        messageJoinRenamed = getString("messages.connect.renamed-player-join-server", "§e%s (formerly known as %s) joined the game");
++        messageKickKeepAlive = getString("messages.disconnect.kick-player-timeout-keep-alive", "Timed out");
++        messagePlayerQuit = getString("messages.disconnect.player-quit-server", "§e%s left the game");
++    }
++    
++    public static String serverBrandName;
++    private static void serverBrandName() {
++        serverBrandName = getString("alternative.modified-server-brand-name", "");
++    }
++    
++    public static boolean disableEndPortalCreate;
++    private static void disableEndPortalCreate() {
++        disableEndPortalCreate = getBoolean("alternative.disable-end-portal-create", false);
++    }
++    
++    public static int primaryThreadPriority;
++    private static void primaryThreadPriority() {
++        primaryThreadPriority = getInt("core.primary-thread-priority", 7);
++    }
++    
++    public static long playersInfoUpdateInterval;
++    private static void playersInfoUpdateInterval() {
++        playersInfoUpdateInterval = getSeconds(getString("core.tick-rate.players-info-update-interval", "30s")) * 10;
++    }
++    
++    public static long versionUpdateInterval;
++    private static void versionUpdateInterval() {
++        versionUpdateInterval = getSeconds(getString("alternative.version-update-interval", "3600s")) * 1000; // 1 hour
++    }
++    
++    public static boolean sendLightOnlyChunkSection;
++    private static void sendLightOnlyChunkSection() {
++        sendLightOnlyChunkSection = getBoolean("core.send-light-only-chunk-sections", true);
++    }
++    
++    public static boolean forceHardcoreDifficulty;
++    private static void forceHardcoreDifficulty() {
++        forceHardcoreDifficulty = getBoolean("alternative.force-difficulty-on-hardcore", true);
++    }
++    
++    public static int fileIOThreads;
++    private static void fileIOThreads() {
++        fileIOThreads = getInt("core.chunk-save-threads", 2);
++    }
++    
++    public static int parallelMode;
++    private static void parallelMode() {
++        parallelMode = getInt("core.parallel-mode", 1);
++    }
++}
+diff --git a/src/main/java/io/akarin/server/core/AkarinSlackScheduler.java b/src/main/java/io/akarin/server/core/AkarinSlackScheduler.java
+new file mode 100644
+index 000000000..b3fc0a325
+--- /dev/null
++++ b/src/main/java/io/akarin/server/core/AkarinSlackScheduler.java
+@@ -0,0 +1,109 @@
++package io.akarin.server.core;
++
++import com.google.common.base.Predicate;
++import com.google.common.collect.Iterables;
++
++import io.akarin.api.internal.Akari;
++import net.minecraft.server.EntityPlayer;
++import net.minecraft.server.EnumDifficulty;
++import net.minecraft.server.MinecraftServer;
++import net.minecraft.server.PacketPlayOutKeepAlive;
++import net.minecraft.server.PacketPlayOutPlayerInfo;
++import net.minecraft.server.PacketPlayOutUpdateTime;
++import net.minecraft.server.PlayerConnection;
++import net.minecraft.server.WorldServer;
++
++public class AkarinSlackScheduler extends Thread {
++    public static AkarinSlackScheduler get() {
++        return Singleton.instance;
++    }
++    
++    public void boot() {
++        setName("Akarin Slack Scheduler Thread");
++        setDaemon(true);
++        start();
++        Akari.logger.info("Slack scheduler service started");
++    }
++    
++    private static class Singleton {
++        private static final AkarinSlackScheduler instance = new AkarinSlackScheduler();
++    }
++    
++    /*
++     * Timers
++     */
++    private long updateTime;
++    private long resendPlayersInfo;
++
++    @Override
++    public void run() {
++        MinecraftServer server = MinecraftServer.getServer();
++        
++        while (server.isRunning()) {
++            long startProcessTiming = System.currentTimeMillis();
++            // Send time updates to everyone, it will get the right time from the world the player is in.
++            // Time update, from MinecraftServer#D
++            if (++updateTime >= AkarinGlobalConfig.timeUpdateInterval) {
++                for (EntityPlayer player : server.getPlayerList().players) {
++                    // Add support for per player time
++                    player.playerConnection.sendPacket(new PacketPlayOutUpdateTime(player.world.getTime(), player.getPlayerTime(), player.world.getGameRules().getBoolean("doDaylightCycle")));
++                }
++                updateTime = 0;
++            }
++            
++            // Keep alive, from PlayerConnection#e
++            for (EntityPlayer player : server.getPlayerList().players) {
++                PlayerConnection conn = player.playerConnection;
++                // Paper - give clients a longer time to respond to pings as per pre 1.12.2 timings
++                // This should effectively place the keepalive handling back to "as it was" before 1.12.2
++                long currentTime = System.nanoTime() / 1000000L;
++                long elapsedTime = currentTime - conn.getLastPing();
++                if (conn.isPendingPing()) {
++                    // We're pending a ping from the client
++                    if (!conn.processedDisconnect && elapsedTime >= AkarinGlobalConfig.keepAliveTimeout) { // check keepalive limit, don't fire if already disconnected
++                        Akari.callbackQueue.add(() -> {
++                            Akari.logger.warn("{} was kicked due to keepalive timeout!", conn.player.getName()); // more info
++                            conn.disconnect("disconnect.timeout");
++                        });
++                    }
++                } else {
++                    if (elapsedTime >= AkarinGlobalConfig.keepAliveSendInterval) { // 15 seconds default
++                        conn.setPendingPing(true);
++                        conn.setLastPing(currentTime);
++                        conn.setKeepAliveID(currentTime);
++                        conn.sendPacket(new PacketPlayOutKeepAlive(conn.getKeepAliveID())); // 15s lagg you should stop your server
++                    }
++                }
++            }
++            
++            // Force hardcore difficulty, from WorldServer#doTick
++            if (AkarinGlobalConfig.forceHardcoreDifficulty)
++            for (WorldServer world : server.worlds) {
++                if (world.getWorldData().isHardcore() && world.getDifficulty() != EnumDifficulty.HARD) {
++                    world.getWorldData().setDifficulty(EnumDifficulty.HARD);
++                }
++            }
++            
++            // Update player info, from PlayerList#tick
++            if (++resendPlayersInfo > AkarinGlobalConfig.playersInfoUpdateInterval) {
++                for (EntityPlayer player : server.getPlayerList().players) {
++                    player.playerConnection.sendPacket(new PacketPlayOutPlayerInfo(PacketPlayOutPlayerInfo.EnumPlayerInfoAction.UPDATE_LATENCY, Iterables.filter(server.getPlayerList().players, new Predicate<EntityPlayer>() {
++                        @Override
++                        public boolean apply(EntityPlayer each) {
++                            return player.getBukkitEntity().canSee(each.getBukkitEntity());
++                        }
++                    })));
++                }
++                resendPlayersInfo = 0;
++            }
++            
++            try {
++                long sleepFixed = 100 - (System.currentTimeMillis() - startProcessTiming);
++                if (sleepFixed > 0) Thread.sleep(sleepFixed);
++            } catch (InterruptedException interrupted) {
++                continue;
++            }
++        }
++    }
++    
++}
+-- 
+2.35.1.windows.2
+

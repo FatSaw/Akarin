@@ -1,0 +1,587 @@
+From f20a8af606572f23b17b87f12a7ad239a6359cb1 Mon Sep 17 00:00:00 2001
+From: Yiyu Si <1486864380@qq.com>
+Date: Fri, 26 Aug 2022 22:42:07 +0800
+Subject: [PATCH] Add PandaWire
+
+
+diff --git a/src/main/java/net/minecraft/server/BlockRedstoneWire.java b/src/main/java/net/minecraft/server/BlockRedstoneWire.java
+index 9d90da98d..85d19649b 100644
+--- a/src/main/java/net/minecraft/server/BlockRedstoneWire.java
++++ b/src/main/java/net/minecraft/server/BlockRedstoneWire.java
+@@ -8,6 +8,8 @@ import java.util.Iterator;
+ import java.util.Random;
+ import java.util.Set;
+ import javax.annotation.Nullable;
++import java.util.List;
++import org.apache.commons.lang3.ArrayUtils;
+ 
+ import org.bukkit.event.block.BlockRedstoneEvent; // CraftBukkit
+ 
+@@ -22,6 +24,38 @@ public class BlockRedstoneWire extends Block {
+     private boolean g = true;
+     private final Set<BlockPosition> B = Sets.newHashSet();
+ 
++    /** Positions that need to be turned off **/
++    private List<BlockPosition> turnOff = Lists.newArrayList();
++    /** Positions that need to be checked to be turned on **/
++    private List<BlockPosition> turnOn = Lists.newArrayList();
++    /** Positions of wire that was updated already (Ordering determines update order and is therefore required!) **/
++    private final Set<BlockPosition> updatedRedstoneWire = Sets.newLinkedHashSet();
++    
++    /** Ordered arrays of the facings; Needed for the update order.
++     *  I went with a vertical-first order here, but vertical last would work to.
++     *  However it should be avoided to update the vertical axis between the horizontal ones as this would cause unneeded directional behavior. **/
++    private static final EnumDirection[] facingsHorizontal = {EnumDirection.WEST, EnumDirection.EAST, EnumDirection.NORTH, EnumDirection.SOUTH};
++    private static final EnumDirection[] facingsVertical = {EnumDirection.DOWN, EnumDirection.UP};
++    private static final EnumDirection[] facings = ArrayUtils.addAll(facingsVertical, facingsHorizontal);
++        
++    /** Offsets for all surrounding blocks that need to receive updates **/
++    private static final BaseBlockPosition[] surroundingBlocksOffset;
++    static {
++        Set<BaseBlockPosition> set = Sets.newLinkedHashSet();
++        for (EnumDirection facing : facings) {
++            set.add(facing.getDirectionPosition());
++        }
++        for (EnumDirection facing1 : facings) {
++            BaseBlockPosition v1 = facing1.getDirectionPosition();
++            for (EnumDirection facing2 : facings) {
++                BaseBlockPosition v2 = facing2.getDirectionPosition();
++                set.add(new BaseBlockPosition(v1.getX() + v2.getX(), v1.getY() + v2.getY(), v1.getZ() + v2.getZ()));
++            }
++        }
++        set.remove(BaseBlockPosition.ZERO);
++        surroundingBlocksOffset = set.toArray(new BaseBlockPosition[set.size()]);
++    }
++
+     public BlockRedstoneWire() {
+         super(Material.ORIENTABLE);
+         this.w(this.blockStateList.getBlockData().set(BlockRedstoneWire.NORTH, BlockRedstoneWire.EnumRedstoneWireConnection.NONE).set(BlockRedstoneWire.EAST, BlockRedstoneWire.EnumRedstoneWireConnection.NONE).set(BlockRedstoneWire.SOUTH, BlockRedstoneWire.EnumRedstoneWireConnection.NONE).set(BlockRedstoneWire.WEST, BlockRedstoneWire.EnumRedstoneWireConnection.NONE).set(BlockRedstoneWire.POWER, Integer.valueOf(0)));
+@@ -107,7 +141,367 @@ public class BlockRedstoneWire extends Block {
+         return world.getType(blockposition.down()).q() || world.getType(blockposition.down()).getBlock() == Blocks.GLOWSTONE;
+     }
+ 
++    /**
++     * Recalculates all surrounding wires and causes all needed updates
++     * 
++     * @author panda
++     * 
++     * @param world World
++     * @param pos Position that needs updating
++     */
++    private void updateSurroundingRedstone(World world, BlockPosition pos) {
++        // Recalculate the connected wires
++        this.calculateCurrentChanges(world, pos);
++
++        // Set to collect all the updates, to only execute them once. Ordering required.
++        Set<BlockPosition> blocksNeedingUpdate = Sets.newLinkedHashSet();
++        
++        // Add the needed updates
++        for (BlockPosition posi : this.updatedRedstoneWire) {
++            this.addBlocksNeedingUpdate(world, posi, blocksNeedingUpdate);
++        }
++        // Add all other updates to keep known behaviors
++        // They are added in a backwards order because it preserves a commonly used behavior with the update order
++        Iterator<BlockPosition> it = Lists.newLinkedList(this.updatedRedstoneWire).descendingIterator();
++        while (it.hasNext()) {
++            this.addAllSurroundingBlocks(it.next(), blocksNeedingUpdate);
++        }
++        // Remove updates on the wires as they just were updated
++        blocksNeedingUpdate.removeAll(this.updatedRedstoneWire);
++        /*
++         * Avoid unnecessary updates on the just updated wires A huge scale test
++         * showed about 40% more ticks per second It's probably less in normal
++         * usage but likely still worth it
++         */
++        this.updatedRedstoneWire.clear();
++        
++        // Execute updates
++        for (BlockPosition posi : blocksNeedingUpdate) {
++            world.applyPhysics(posi, (BlockRedstoneWire) (Object) this, false);
++        }
++    }
++
++    /**
++     * Turns on or off all connected wires
++     * 
++     * @param worldIn World
++     * @param position Position of the wire that received the update
++     */
++    private void calculateCurrentChanges(World worldIn, BlockPosition position) {
++        // Turn off all connected wires first if needed
++        if (worldIn.getType(position).getBlock() == (BlockRedstoneWire) (Object) this) {
++            turnOff.add(position);
++        } else {
++            // In case this wire was removed, check the surrounding wires
++            this.checkSurroundingWires(worldIn, position);
++        }
++        
++        while (!turnOff.isEmpty()) {
++            BlockPosition pos = turnOff.remove(0);
++            if (pos == null) continue; // Akarin
++            IBlockData state = worldIn.getType(pos);
++            int oldPower = state.get(BlockRedstoneWire.POWER).intValue();
++            this.g = false;
++            int blockPower = worldIn.z(pos); // OBFHELPER: isBlockIndirectlyGettingPowered
++            this.g = true;
++            int wirePower = this.getSurroundingWirePower(worldIn, pos);
++            
++            // Lower the strength as it moved a block
++            wirePower--;
++            int newPower = Math.max(blockPower, wirePower);
++            
++            // Akarin start - BlockRedstoneEvent
++            if (oldPower != newPower) {
++                BlockRedstoneEvent event = new BlockRedstoneEvent(worldIn.getWorld().getBlockAt(pos.getX(), pos.getY(), pos.getZ()), oldPower, newPower);
++                worldIn.getServer().getPluginManager().callEvent(event);
++                newPower = event.getNewCurrent();
++            }
++            // Akarin end
++            
++            // Power lowered?
++            if (newPower < oldPower) {
++                // If it's still powered by a direct source (but weaker) mark for turn on
++                if (blockPower > 0 && !this.turnOn.contains(pos)) {
++                    this.turnOn.add(pos);
++                }
++                // Set all the way to off for now, because wires that were powered by this need to update first
++                setWireState(worldIn, pos, state, 0);
++            // Power rose?
++            } else if (newPower > oldPower) {
++                // Set new Power
++                this.setWireState(worldIn, pos, state, newPower);
++            }
++            // Check if surrounding wires need to change based on the current/new state and add them to the lists
++            this.checkSurroundingWires(worldIn, pos);
++        }
++        // Now all needed wires are turned off. Time to turn them on again if there is a power source.
++        while (!this.turnOn.isEmpty()) {
++            BlockPosition pos = this.turnOn.remove(0);
++            if (pos == null) continue; // Akarin
++            IBlockData state = worldIn.getType(pos);
++            int oldPower = state.get(BlockRedstoneWire.POWER).intValue();
++            this.g = false;
++            int blockPower = worldIn.z(pos); // OBFHELPER: isBlockIndirectlyGettingPowered
++            this.g = true;
++            int wirePower = this.getSurroundingWirePower(worldIn, pos);
++            // Lower the strength as it moved a block
++            wirePower--;
++            int newPower = Math.max(blockPower, wirePower);
++            
++            // Akarin start - BlockRedstoneEvent
++            BlockRedstoneEvent event = new BlockRedstoneEvent(worldIn.getWorld().getBlockAt(pos.getX(), pos.getY(), pos.getZ()), oldPower, newPower);
++            worldIn.getServer().getPluginManager().callEvent(event);
++            newPower = event.getNewCurrent();
++            // Akarin end
++            
++            if (newPower > oldPower) {
++                setWireState(worldIn, pos, state, newPower);
++            } else if (newPower < oldPower) {
++                // Add warning
++            }
++            // Check if surrounding wires need to change based on the current/new state and add them to the lists
++            this.checkSurroundingWires(worldIn, pos);
++        }
++        this.turnOff.clear();
++        this.turnOn.clear();
++    }
++    /**
++     * Checks if an wire needs to be marked for update depending on the power next to it
++     * 
++     * @author panda
++     * 
++     * @param worldIn World
++     * @param pos Position of the wire that might need to change
++     * @param otherPower Power of the wire next to it
++     */
++    private void addWireToList(World worldIn, BlockPosition pos, int otherPower) {
++        IBlockData state = worldIn.getType(pos);
++        if (state.getBlock() == (BlockRedstoneWire) (Object) this) {
++            int power = state.get(BlockRedstoneWire.POWER).intValue();
++            // Could get powered stronger by the neighbor?
++            if (power < (otherPower - 1) && !this.turnOn.contains(pos)) {
++                // Mark for turn on check.
++                this.turnOn.add(pos);
++            }
++            // Should have powered the neighbor? Probably was powered by it and is in turn off phase.
++            if (power > otherPower && !this.turnOff.contains(pos)) {
++                // Mark for turn off check.
++                this.turnOff.add(pos);
++            }
++        }
++    }
++
++    /**
++     * Checks if the wires around need to get updated depending on this wires state.
++     * Checks all wires below before the same layer before on top to keep
++     * some more rotational symmetry around the y-axis. 
++     * 
++     * @author panda
++     * 
++     * @param worldIn World
++     * @param pos Position of the wire
++     */
++    private void checkSurroundingWires(World worldIn, BlockPosition pos) {
++        IBlockData state = worldIn.getType(pos);
++        int ownPower = 0;
++        if (state.getBlock() == (BlockRedstoneWire) (Object) this) {
++            ownPower = state.get(BlockRedstoneWire.POWER).intValue();
++        }
++        // Check wires on the same layer first as they appear closer to the wire
++        for (EnumDirection facing : facingsHorizontal) {
++            BlockPosition offsetPos = pos.shift(facing);
++            if (facing.getAxis().isHorizontal()) {
++                this.addWireToList(worldIn, offsetPos, ownPower);
++            }
++        }
++        for (EnumDirection facingVertical : facingsVertical) {
++            BlockPosition offsetPos = pos.shift(facingVertical);
++            boolean solidBlock = worldIn.getType(offsetPos).k(); // OBFHELPER: isBlockNormalCube
++            for (EnumDirection facingHorizontal : facingsHorizontal) {
++                // wire can travel upwards if the block on top doesn't cut the wire (is non-solid)
++                // it can travel down if the block below is solid and the block "diagonal" doesn't cut off the wire (is non-solid) 
++                if ((facingVertical == EnumDirection.UP && !solidBlock) || (facingVertical == EnumDirection.DOWN && solidBlock && !worldIn.getType(offsetPos.shift(facingHorizontal)).k())) { // OBFHELPER: isBlockNormalCube
++                    this.addWireToList(worldIn, offsetPos.shift(facingHorizontal), ownPower);
++                }
++            }
++        }
++    }
++
++    /**
++     * Gets the maximum power of the surrounding wires
++     * 
++     * @author panda
++     * 
++     * @param worldIn World
++     * @param pos Position of the asking wire
++     * @return The maximum power of the wires that could power the wire at pos
++     */
++    private int getSurroundingWirePower(World worldIn, BlockPosition pos) {
++        int wirePower = 0;
++        for (EnumDirection enumfacing : EnumDirection.EnumDirectionLimit.HORIZONTAL) {
++            BlockPosition offsetPos = pos.shift(enumfacing);
++            // Wires on the same layer
++            wirePower = this.getPower(worldIn, offsetPos, wirePower);
++            
++            // Block below the wire need to be solid (Upwards diode of slabs/stairs/glowstone) and no block should cut the wire
++            if(worldIn.getType(offsetPos).l() && !worldIn.getType(pos.up()).l()) { // OBFHELPER: isNormalCube
++                wirePower = this.getPower(worldIn, offsetPos.up(), wirePower);
++                // Only get from power below if no block is cutting the wire
++            } else if (!worldIn.getType(offsetPos).l()) { // OBFHELPER: isNormalCube
++                wirePower = this.getPower(worldIn, offsetPos.down(), wirePower);
++            }
++        }
++        return wirePower;
++    }
++
++    /**
++     * Adds all blocks that need to receive an update from a redstone change in this position.
++     * This means only blocks that actually could change.
++     * 
++     * @author panda
++     * 
++     * @param worldIn World
++     * @param pos Position of the wire
++     * @param set Set to add the update positions too
++     */
++    private void addBlocksNeedingUpdate(World worldIn, BlockPosition pos, Set<BlockPosition> set) {
++        List<EnumDirection> connectedSides = this.getSidesToPower(worldIn, pos);
++        // Add the blocks next to the wire first (closest first order)
++        for (EnumDirection facing : facings) {
++            BlockPosition offsetPos = pos.shift(facing);
++            // canConnectTo() is not the nicest solution here as it returns true for e.g. the front of a repeater
++            // canBlockBePowereFromSide catches these cases
++            if (!connectedSides.contains(facing.opposite()) && facing != EnumDirection.DOWN
++                    && (!facing.getAxis().isHorizontal() || canConnectToBlock(worldIn.getType(offsetPos), facing))) continue;
++            if (this.canBlockBePoweredFromSide(worldIn.getType(offsetPos), facing, true))
++                set.add(offsetPos);
++        }
++        // Later add blocks around the surrounding blocks that get powered
++        for (EnumDirection facing : facings) {
++            BlockPosition offsetPos = pos.shift(facing);
++            if (!connectedSides.contains(facing.opposite()) && facing != EnumDirection.DOWN || !worldIn.getType(offsetPos).l()) continue; // OBFHELPER: isNormalCube
++            for (EnumDirection facing1 : facings) {
++                if (this.canBlockBePoweredFromSide(worldIn.getType(offsetPos.shift(facing1)), facing1, false))
++                    set.add(offsetPos.shift(facing1));
++            }
++        }
++    }
++
++    /**
++     * Checks if a block can get powered from a side.
++     * This behavior would better be implemented per block type as follows:
++     *  - return false as default. (blocks that are not affected by redstone don't need to be updated, it doesn't really hurt if they are either)
++     *  - return true for all blocks that can get powered from all side and change based on it (doors, fence gates, trap doors, note blocks, lamps, dropper, hopper, TNT, rails, possibly more)
++     *  - implement own logic for pistons, repeaters, comparators and redstone torches
++     *  The current implementation was chosen to keep everything in one class.
++     *  
++     *  Why is this extra check needed?
++     *  1. It makes sure that many old behaviors still work (QC + Pistons).
++     *  2. It prevents updates from "jumping".
++     *     Or rather it prevents this wire to update a block that would get powered by the next one of the same line.
++     *     This is to prefer as it makes understanding the update order of the wire really easy. The signal "travels" from the power source.
++     * 
++     * @author panda
++     * 
++     * @param state      State of the block
++     * @param side       Side from which it gets powered
++     * @param isWire     True if it's powered by a wire directly, False if through a block
++     * @return           True if the block can change based on the power level it gets on the given side, false otherwise
++     */
++    private boolean canBlockBePoweredFromSide(IBlockData state, EnumDirection side, boolean isWire) {
++        if (state.getBlock() instanceof BlockPiston && state.get(BlockPiston.FACING) == side.opposite()) {
++            return false;
++        }
++        if (state.getBlock() instanceof BlockDiodeAbstract && state.get(BlockDiodeAbstract.FACING) != side.opposite()) {
++            if (isWire && state.getBlock() instanceof BlockRedstoneComparator
++                    && state.get(BlockRedstoneComparator.FACING).k() != side.getAxis() && side.getAxis().isHorizontal()) {
++                return true;
++            }
++            return false;
++        }
++        if (state.getBlock() instanceof BlockRedstoneTorch) {
++            if (isWire || state.get(BlockRedstoneTorch.FACING) != side) {
++                return false;
++            }
++        }
++        return true;
++    }
++
++    /**
++     * Creates a list of all horizontal sides that can get powered by a wire.
++     * The list is ordered the same as the facingsHorizontal.
++     * 
++     * @param worldIn World
++     * @param pos Position of the wire
++     * @return List of all facings that can get powered by this wire
++     */
++    private List<EnumDirection> getSidesToPower(World worldIn, BlockPosition pos) {
++        List<EnumDirection> retval = Lists.newArrayList();
++        for (EnumDirection facing : facingsHorizontal) {
++            if (b(worldIn, pos, facing))
++                retval.add(facing);
++        }
++        if (retval.isEmpty()) return Lists.newArrayList(facingsHorizontal);
++        boolean northsouth = retval.contains(EnumDirection.NORTH) || retval.contains(EnumDirection.SOUTH);
++        boolean eastwest = retval.contains(EnumDirection.EAST) || retval.contains(EnumDirection.WEST);
++        if (northsouth) {
++            retval.remove(EnumDirection.EAST);
++            retval.remove(EnumDirection.WEST);
++        }
++        if (eastwest) {
++            retval.remove(EnumDirection.NORTH);
++            retval.remove(EnumDirection.SOUTH);
++        }
++        return retval;
++    }
++
++    /**
++     * Adds all surrounding positions to a set.
++     * This is the neighbor blocks, as well as their neighbors 
++     * 
++     * @param pos
++     * @param set
++     */
++    private void addAllSurroundingBlocks(BlockPosition pos, Set<BlockPosition> set) {
++        for (BaseBlockPosition vect : surroundingBlocksOffset) {
++            set.add(pos.a(vect)); // OBFHELPER: add
++        }
++    }
++
++    /**
++     * Sets the block state of a wire with a new power level and marks for updates
++     * 
++     * @author panda
++     * 
++     * @param worldIn World
++     * @param pos Position at which the state needs to be set
++     * @param state Old state
++     * @param power Power it should get set to
++     */
++    private void setWireState(World worldIn, BlockPosition pos, IBlockData state, int power) {
++        state = state.set(BlockRedstoneWire.POWER, Integer.valueOf(power));
++        worldIn.setTypeAndData(pos, state, 2);
++        updatedRedstoneWire.add(pos);
++    }
++
++    private static boolean canConnectToBlock(IBlockData blockState, @Nullable EnumDirection side) {
++        Block block = blockState.getBlock();
++        
++        if (block == Blocks.REDSTONE_WIRE) {
++            return true;
++        } else if (Blocks.UNPOWERED_REPEATER.D(blockState)) { // OBFHELPER: isSameDiode
++            EnumDirection enumdirection1 = blockState.get(BlockRepeater.FACING);
++            
++            return enumdirection1 == side || enumdirection1.opposite() == side;
++        } else if (Blocks.dk == blockState.getBlock()) {
++            return side == blockState.get(BlockObserver.FACING); // OBFHELPER: OBSERVER
++        } else {
++            return blockState.m() && side != null; // OBFHELPER: g
++        }
++    }
++    
+     private IBlockData e(World world, BlockPosition blockposition, IBlockData iblockdata) {
++        this.updateSurroundingRedstone(world, blockposition);
+         iblockdata = this.a(world, blockposition, blockposition, iblockdata);
+         ArrayList arraylist = Lists.newArrayList(this.B);
+ 
+@@ -124,6 +518,7 @@ public class BlockRedstoneWire extends Block {
+     }
+ 
+     private IBlockData a(World world, BlockPosition blockposition, BlockPosition blockposition1, IBlockData iblockdata) {
++        this.calculateCurrentChanges(world, blockposition);
+         IBlockData iblockdata1 = iblockdata;
+         int i = ((Integer) iblockdata.get(BlockRedstoneWire.POWER)).intValue();
+         byte b0 = 0;
+@@ -214,76 +609,33 @@ public class BlockRedstoneWire extends Block {
+         }
+     }
+ 
+-    public void onPlace(World world, BlockPosition blockposition, IBlockData iblockdata) {
+-        if (!world.isClientSide) {
+-            this.e(world, blockposition, iblockdata);
+-            Iterator iterator = EnumDirection.EnumDirectionLimit.VERTICAL.iterator();
+-
+-            EnumDirection enumdirection;
+-
+-            while (iterator.hasNext()) {
+-                enumdirection = (EnumDirection) iterator.next();
+-                world.applyPhysics(blockposition.shift(enumdirection), this, false);
+-            }
+-
+-            iterator = EnumDirection.EnumDirectionLimit.HORIZONTAL.iterator();
+-
+-            while (iterator.hasNext()) {
+-                enumdirection = (EnumDirection) iterator.next();
+-                this.b(world, blockposition.shift(enumdirection));
+-            }
+-
+-            iterator = EnumDirection.EnumDirectionLimit.HORIZONTAL.iterator();
+-
+-            while (iterator.hasNext()) {
+-                enumdirection = (EnumDirection) iterator.next();
+-                BlockPosition blockposition1 = blockposition.shift(enumdirection);
+-
+-                if (world.getType(blockposition1).l()) {
+-                    this.b(world, blockposition1.up());
+-                } else {
+-                    this.b(world, blockposition1.down());
+-                }
+-            }
+-
++    /**
++     * @author panda
++     * @reason Uses local surrounding block offset list for notifications.
++     *
++     * @param world The world
++     * @param pos The position
++     * @param state The block state
++     */
++    public void onPlace(World world, BlockPosition pos, IBlockData state) {
++        this.updateSurroundingRedstone(world, pos);
++        for (BaseBlockPosition vec : surroundingBlocksOffset) {
++            world.applyPhysics(pos.a(vec), this, false); // OBFHELPER: add
+         }
+     }
+ 
+-    public void remove(World world, BlockPosition blockposition, IBlockData iblockdata) {
+-        super.remove(world, blockposition, iblockdata);
+-        if (!world.isClientSide) {
+-            EnumDirection[] aenumdirection = EnumDirection.values();
+-            int i = aenumdirection.length;
+-
+-            for (int j = 0; j < i; ++j) {
+-                EnumDirection enumdirection = aenumdirection[j];
+-
+-                world.applyPhysics(blockposition.shift(enumdirection), this, false);
+-            }
+-
+-            this.e(world, blockposition, iblockdata);
+-            Iterator iterator = EnumDirection.EnumDirectionLimit.HORIZONTAL.iterator();
+-
+-            EnumDirection enumdirection1;
+-
+-            while (iterator.hasNext()) {
+-                enumdirection1 = (EnumDirection) iterator.next();
+-                this.b(world, blockposition.shift(enumdirection1));
+-            }
+-
+-            iterator = EnumDirection.EnumDirectionLimit.HORIZONTAL.iterator();
+-
+-            while (iterator.hasNext()) {
+-                enumdirection1 = (EnumDirection) iterator.next();
+-                BlockPosition blockposition1 = blockposition.shift(enumdirection1);
+-
+-                if (world.getType(blockposition1).l()) {
+-                    this.b(world, blockposition1.up());
+-                } else {
+-                    this.b(world, blockposition1.down());
+-                }
+-            }
+-
++    /**
++     * @author panda
++     * @reason Uses local surrounding block offset list for notifications.
++     *
++     * @param world The world
++     * @param pos The position
++     */
++    public void remove(World world, BlockPosition pos, IBlockData state) {
++        super.remove(world, pos, state);
++        this.updateSurroundingRedstone(world, pos);
++        for (BaseBlockPosition vec : surroundingBlocksOffset) {
++            world.applyPhysics(pos.a(vec), this, false); // OBFHELPER: add
+         }
+     }
+ 
+@@ -317,35 +669,23 @@ public class BlockRedstoneWire extends Block {
+         return !this.g ? 0 : iblockdata.a(iblockaccess, blockposition, enumdirection);
+     }
+ 
+-    public int b(IBlockData iblockdata, IBlockAccess iblockaccess, BlockPosition blockposition, EnumDirection enumdirection) {
++    /**
++     * @author panda
++     * @reason Changed to use getSidesToPower() to avoid duplicate implementation.
++     *
++     * @param blockState The block state
++     * @param blockAccess The block access
++     * @param pos The position
++     * @param side The side
++     */
++    public int b(IBlockData blockState, IBlockAccess blockAccess, BlockPosition pos, EnumDirection side) { // OBFHELPER: getWeakPower
+         if (!this.g) {
+             return 0;
+         } else {
+-            int i = ((Integer) iblockdata.get(BlockRedstoneWire.POWER)).intValue();
+-
+-            if (i == 0) {
+-                return 0;
+-            } else if (enumdirection == EnumDirection.UP) {
+-                return i;
++            if (side == EnumDirection.UP || this.getSidesToPower((World) blockAccess, pos).contains(side)) {
++                return blockState.get(BlockRedstoneWire.POWER).intValue();
+             } else {
+-                EnumSet enumset = EnumSet.noneOf(EnumDirection.class);
+-                Iterator iterator = EnumDirection.EnumDirectionLimit.HORIZONTAL.iterator();
+-
+-                while (iterator.hasNext()) {
+-                    EnumDirection enumdirection1 = (EnumDirection) iterator.next();
+-
+-                    if (this.b(iblockaccess, blockposition, enumdirection1)) {
+-                        enumset.add(enumdirection1);
+-                    }
+-                }
+-
+-                if (enumdirection.k().c() && enumset.isEmpty()) {
+-                    return i;
+-                } else if (enumset.contains(enumdirection) && !enumset.contains(enumdirection.f()) && !enumset.contains(enumdirection.e())) {
+-                    return i;
+-                } else {
+-                    return 0;
+-                }
++                return 0;
+             }
+         }
+     }
+-- 
+2.35.1.windows.2
+

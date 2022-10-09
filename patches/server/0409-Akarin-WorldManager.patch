@@ -1,0 +1,32 @@
+From b6fe29590a6cd9d3c22957d9e932a5e32380e30e Mon Sep 17 00:00:00 2001
+From: Yiyu Si <1486864380@qq.com>
+Date: Sat, 20 Aug 2022 10:50:52 +0800
+Subject: [PATCH] Akarin WorldManager
+
+
+diff --git a/src/main/java/net/minecraft/server/WorldManager.java b/src/main/java/net/minecraft/server/WorldManager.java
+index bfe003f60..11ceea82d 100644
+--- a/src/main/java/net/minecraft/server/WorldManager.java
++++ b/src/main/java/net/minecraft/server/WorldManager.java
+@@ -17,13 +17,17 @@ public class WorldManager implements IWorldAccess {
+ 
+     public void a(int i, boolean flag, boolean flag1, double d0, double d1, double d2, double d3, double d4, double d5, int... aint) {}
+ 
++    //Akarin Start
+     public void a(Entity entity) {
++        this.world.getTracker().entriesLock.writeLock().lock(); // Akarin
+         this.world.getTracker().track(entity);
++        this.world.getTracker().entriesLock.writeLock().unlock(); // Akarin
++        
+         if (entity instanceof EntityPlayer) {
+             this.world.worldProvider.a((EntityPlayer) entity);
+         }
+-
+     }
++    //Akarin End
+ 
+     public void b(Entity entity) {
+         this.world.getTracker().untrackEntity(entity);
+-- 
+2.35.1.windows.2
+

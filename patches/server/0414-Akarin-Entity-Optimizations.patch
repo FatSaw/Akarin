@@ -1,0 +1,89 @@
+From 1adf1f5271ced29d3980cd3d66c8579c23170278 Mon Sep 17 00:00:00 2001
+From: Yiyu Si <1486864380@qq.com>
+Date: Fri, 26 Aug 2022 22:03:27 +0800
+Subject: [PATCH] Akarin Entity Optimizations
+
+
+diff --git a/src/main/java/net/minecraft/server/Entity.java b/src/main/java/net/minecraft/server/Entity.java
+index a0802c4f7..016d1bbc0 100644
+--- a/src/main/java/net/minecraft/server/Entity.java
++++ b/src/main/java/net/minecraft/server/Entity.java
+@@ -1246,9 +1246,22 @@ public abstract class Entity implements ICommandListener, KeyedObject { // Paper
+         }
+     }
+ 
++    //Akarin Start
++    private boolean isInLava;
++    private int lastLavaCheck = Integer.MIN_VALUE;
+     public boolean au() {
+-        return this.world.a(this.getBoundingBox().grow(-0.10000000149011612D, -0.4000000059604645D, -0.10000000149011612D), Material.LAVA);
++        /*
++         * This originally comes from Migot (https://github.com/Poweruser/Migot/commit/cafbf1707107d2a3aa6232879f305975bb1f0285)
++         * Thanks @Poweruser
++         */
++        int currentTick = MinecraftServer.currentTick;
++        if (this.lastLavaCheck != currentTick) {
++            this.lastLavaCheck = currentTick;
++            this.isInLava = this.world.a(this.getBoundingBox().grow(-0.10000000149011612D, -0.4000000059604645D, -0.10000000149011612D), Material.LAVA);
++        }
++        return this.isInLava;
+     }
++    // Akarin End
+ 
+     public void b(float f, float f1, float f2, float f3) {
+         float f4 = f * f + f1 * f1 + f2 * f2;
+diff --git a/src/main/java/net/minecraft/server/EntityHorseAbstract.java b/src/main/java/net/minecraft/server/EntityHorseAbstract.java
+index dcc39236f..1f4659db9 100644
+--- a/src/main/java/net/minecraft/server/EntityHorseAbstract.java
++++ b/src/main/java/net/minecraft/server/EntityHorseAbstract.java
+@@ -85,14 +85,19 @@ public abstract class EntityHorseAbstract extends EntityAnimal implements IInven
+         return this.g(2);
+     }
+ 
++    // Akarin Start
++    @Nullable private Optional<UUID> cachedOwnerId;
+     @Nullable
+     public UUID getOwnerUUID() {
+-        return (UUID) ((Optional) this.datawatcher.get(EntityHorseAbstract.bJ)).orNull();
++        if (cachedOwnerId == null) cachedOwnerId = datawatcher.get(OWNER_UNIQUE_ID);
++        return cachedOwnerId.orNull();
+     }
+ 
+     public void setOwnerUUID(@Nullable UUID uuid) {
+-        this.datawatcher.set(EntityHorseAbstract.bJ, Optional.fromNullable(uuid));
++        cachedOwnerId = Optional.fromNullable(uuid);
++        datawatcher.set(bJ, cachedOwnerId);
+     }
++    // Akarin End
+ 
+     public float dw() {
+         return 0.5F;
+diff --git a/src/main/java/net/minecraft/server/EntityTameableAnimal.java b/src/main/java/net/minecraft/server/EntityTameableAnimal.java
+index 6c86fefcf..f71b3741d 100644
+--- a/src/main/java/net/minecraft/server/EntityTameableAnimal.java
++++ b/src/main/java/net/minecraft/server/EntityTameableAnimal.java
+@@ -114,14 +114,19 @@ public abstract class EntityTameableAnimal extends EntityAnimal implements Entit
+ 
+     }
+ 
++    // Akarin Start
++    @Nullable private Optional<UUID> cachedOwnerId;
+     @Nullable
+     public UUID getOwnerUUID() {
+-        return (UUID) ((Optional) this.datawatcher.get(EntityTameableAnimal.by)).orNull();
++        if (cachedOwnerId == null) cachedOwnerId = datawatcher.get(by);
++        return cachedOwnerId.orNull();
+     }
+ 
+     public void setOwnerUUID(@Nullable UUID uuid) {
+-        this.datawatcher.set(EntityTameableAnimal.by, Optional.fromNullable(uuid));
++        cachedOwnerId = Optional.fromNullable(uuid);
++        datawatcher.set(by, cachedOwnerId);
+     }
++    // Akarin End
+ 
+     public void c(EntityHuman entityhuman) {
+         this.setTamed(true);
+-- 
+2.35.1.windows.2
+

@@ -1,0 +1,30 @@
+From faf03e4995765091f18e961c1be1a48926ae9f0c Mon Sep 17 00:00:00 2001
+From: Yiyu Si <1486864380@qq.com>
+Date: Fri, 19 Aug 2022 15:15:02 +0800
+Subject: [PATCH] Akarin ChunkSection
+
+
+diff --git a/src/main/java/net/minecraft/server/ChunkSection.java b/src/main/java/net/minecraft/server/ChunkSection.java
+index aae227fdb..20fe5cde2 100644
+--- a/src/main/java/net/minecraft/server/ChunkSection.java
++++ b/src/main/java/net/minecraft/server/ChunkSection.java
+@@ -1,5 +1,7 @@
+ package net.minecraft.server;
+ 
++import io.akarin.server.core.AkarinGlobalConfig; //Akarin
++
+ public class ChunkSection {
+ 
+     private final int yPos;
+@@ -76,7 +78,7 @@ public class ChunkSection {
+     }
+ 
+     public boolean a() {
+-        return false; // CraftBukkit - MC-80966
++        return AkarinGlobalConfig.sendLightOnlyChunkSection ? false : nonEmptyBlockCount == 0; //Akarin
+     }
+ 
+     public boolean shouldTick() {
+-- 
+2.35.1.windows.2
+

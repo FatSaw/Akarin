@@ -1,0 +1,161 @@
+From 5baea34f26b09602906709c147425f6b46d6e301 Mon Sep 17 00:00:00 2001
+From: Yiyu Si <1486864380@qq.com>
+Date: Fri, 26 Aug 2022 21:08:15 +0800
+Subject: [PATCH] Akarin CPS Optimizations
+
+
+diff --git a/src/main/java/net/minecraft/server/ChunkProviderServer.java b/src/main/java/net/minecraft/server/ChunkProviderServer.java
+index e6ae21326..a9e047532 100644
+--- a/src/main/java/net/minecraft/server/ChunkProviderServer.java
++++ b/src/main/java/net/minecraft/server/ChunkProviderServer.java
+@@ -23,6 +23,11 @@ import org.apache.logging.log4j.Logger;
+ import org.bukkit.craftbukkit.chunkio.ChunkIOExecutor;
+ import org.bukkit.event.world.ChunkUnloadEvent;
+ // CraftBukkit end
++// Akarin Start
++import org.spigotmc.SlackActivityAccountant;
++import it.unimi.dsi.fastutil.longs.Long2ObjectMap.Entry;
++import it.unimi.dsi.fastutil.objects.ObjectIterator;
++// Akarin End
+ 
+ public class ChunkProviderServer implements IChunkProvider {
+ 
+@@ -70,10 +75,10 @@ public class ChunkProviderServer implements IChunkProvider {
+ 
+     public void unload(Chunk chunk) {
+         if (this.world.worldProvider.c(chunk.locX, chunk.locZ)) {
+-            this.unloadQueue.add(Long.valueOf(ChunkCoordIntPair.a(chunk.locX, chunk.locZ)));
+-            chunk.d = true;
++            // Akarin - avoid using the queue and simply check the unloaded flag during unloads
++            // this.unloadQueue.add(Long.valueOf(ChunkCoordIntPair.a(chunk.locX, chunk.locZ)));
++            chunk.setShouldUnload(true);
+         }
+-
+     }
+ 
+     public void b() {
+@@ -334,59 +339,42 @@ public class ChunkProviderServer implements IChunkProvider {
+ 
+     private static final double UNLOAD_QUEUE_RESIZE_FACTOR = 0.96;
+ 
++    // Akarin Start
+     public boolean unloadChunks() {
+         if (!this.world.savingDisabled) {
+-            if (!this.unloadQueue.isEmpty()) {
+-                // Spigot start
+-                org.spigotmc.SlackActivityAccountant activityAccountant = this.world.getMinecraftServer().slackActivityAccountant;
+-                activityAccountant.startActivity(0.5);
+-                int targetSize = Math.min(this.unloadQueue.size() - 100,  (int) (this.unloadQueue.size() * UNLOAD_QUEUE_RESIZE_FACTOR)); // Paper - Make more aggressive
+-                // Spigot end
+-
+-                LongIterator iterator = this.unloadQueue.iterator();
+-
+-                while (iterator.hasNext()) { // Spigot
+-                    Long chunkKey = iterator.nextLong();
+-                    iterator.remove(); // Spigot
+-                    Chunk chunk = (Chunk) this.chunks.get(chunkKey);
+-
+-                    if (chunk != null && chunk.d) {
+-                        // CraftBukkit start - move unload logic to own method
+-                        chunk.setShouldUnload(false); // Paper
+-                        if (!unloadChunk(chunk, true)) {
+-                            continue;
+-                        }
+-                        // CraftBukkit end
+-
+-                        // Spigot start
+-                        if (this.unloadQueue.size() <= targetSize && activityAccountant.activityTimeIsExhausted()) {
+-                            break;
+-                        }
+-                        // Spigot end
+-                    }
+-                }
+-
+-                activityAccountant.endActivity(); // Spigot
+-            }
+-            // Paper start - delayed chunk unloads
+             long now = System.currentTimeMillis();
+             long unloadAfter = world.paperConfig.delayChunkUnloadsBy;
+-            if (unloadAfter > 0) {
+-                //noinspection Convert2streamapi
+-                for (Chunk chunk : chunks.values()) {
+-                    if (chunk.scheduledForUnload != null && now - chunk.scheduledForUnload > unloadAfter) {
+-                        chunk.scheduledForUnload = null;
+-                        unload(chunk);
++            SlackActivityAccountant activityAccountant = world.getMinecraftServer().slackActivityAccountant;
++            activityAccountant.startActivity(0.5);
++            
++            ObjectIterator<Entry<Chunk>> it = chunks.long2ObjectEntrySet().fastIterator();
++            int remainingChunks = chunks.size();
++            int targetSize = Math.min(remainingChunks - 100,  (int) (remainingChunks * UNLOAD_QUEUE_RESIZE_FACTOR)); // Paper - Make more aggressive
++            
++            while (it.hasNext()) {
++                Entry<Chunk> entry = it.next();
++                Chunk chunk = entry.getValue();
++                
++                if (chunk != null && chunk.isUnloading()) {
++                    if (chunk.scheduledForUnload != null) {
++                        if (now - chunk.scheduledForUnload <= unloadAfter) continue;
++                    }
++                    
++                    if (unloadChunk(chunk, true)) {
++                        it.remove();
+                     }
++                    chunk.setShouldUnload(false);
++                    chunk.scheduledForUnload = null;
++                    
++                    if (--remainingChunks <= targetSize && activityAccountant.activityTimeIsExhausted()) break;
+                 }
+             }
+-            // Paper end
+-
+-            this.chunkLoader.b();
++            activityAccountant.endActivity();
++            this.chunkLoader.b(); // OBFHELPER: chunkTick
+         }
+-
+         return false;
+     }
++    // Akarin End
+ 
+     // CraftBukkit start
+     public boolean unloadChunk(Chunk chunk, boolean save) {
+@@ -428,7 +416,7 @@ public class ChunkProviderServer implements IChunkProvider {
+     }
+ 
+     public String getName() {
+-        return "ServerChunkCache: " + this.chunks.size() + " Drop: " + this.unloadQueue.size();
++        return "ServerChunkCache: " + chunks.size(); // Akarin
+     }
+ 
+     public List<BiomeBase.BiomeMeta> a(EnumCreatureType enumcreaturetype, BlockPosition blockposition) {
+diff --git a/src/main/java/org/bukkit/craftbukkit/CraftWorld.java b/src/main/java/org/bukkit/craftbukkit/CraftWorld.java
+index afb141c62..0d988b373 100644
+--- a/src/main/java/org/bukkit/craftbukkit/CraftWorld.java
++++ b/src/main/java/org/bukkit/craftbukkit/CraftWorld.java
+@@ -262,7 +262,8 @@ public class CraftWorld implements World {
+         }
+ 
+         final long chunkKey = ChunkCoordIntPair.a(x, z);
+-        world.getChunkProviderServer().unloadQueue.remove(chunkKey);
++        net.minecraft.server.Chunk chunk = world.getChunkProviderServer().chunks.get(chunkKey);
++        if (chunk != null) chunk.setShouldUnload(false);
+ 
+         net.minecraft.server.Chunk chunk = null;
+ 
+@@ -1635,10 +1636,12 @@ public class CraftWorld implements World {
+                 continue;
+             }
+ 
++            /* Akarin CPS changes
+             // Already unloading?
+             if (cps.unloadQueue.contains(ChunkCoordIntPair.a(chunk.locX, chunk.locZ))) {
+                 continue;
+             }
++            */
+ 
+             // Add unload request
+             cps.unload(chunk);
+-- 
+2.35.1.windows.2
+

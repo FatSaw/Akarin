@@ -1,0 +1,29 @@
+From 3d9ee93f9794202cd51e19d20f057be00deb6be3 Mon Sep 17 00:00:00 2001
+From: Yiyu Si <1486864380@qq.com>
+Date: Thu, 1 Sep 2022 21:13:31 +0800
+Subject: [PATCH] IMixinWorldServer API
+
+
+diff --git a/src/main/java/net/minecraft/server/WorldServer.java b/src/main/java/net/minecraft/server/WorldServer.java
+index f2fb78e69..58851d488 100644
+--- a/src/main/java/net/minecraft/server/WorldServer.java
++++ b/src/main/java/net/minecraft/server/WorldServer.java
+@@ -65,6 +65,7 @@ public class WorldServer extends World implements IAsyncTaskHandler, IMixinWorld
+     //Akarin Start
+     private final Object tickLock = new Object();
+ 
++    @Override
+     public Object lock() {
+         return tickLock;
+     }
+@@ -83,6 +84,7 @@ public class WorldServer extends World implements IAsyncTaskHandler, IMixinWorld
+         }
+     };
+     
++    @Override
+     public Random rand() {
+         return sharedRandom;
+     }
+-- 
+2.35.1.windows.2
+

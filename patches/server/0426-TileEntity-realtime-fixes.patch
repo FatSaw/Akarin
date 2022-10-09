@@ -1,0 +1,92 @@
+From 0e81f8146b95561693a988d456f7ead18a98a025 Mon Sep 17 00:00:00 2001
+From: Yiyu Si <1486864380@qq.com>
+Date: Thu, 1 Sep 2022 21:10:36 +0800
+Subject: [PATCH] TileEntity realtime fixes
+
+
+diff --git a/src/main/java/net/minecraft/server/TileEntityBrewingStand.java b/src/main/java/net/minecraft/server/TileEntityBrewingStand.java
+index 872c42c07..e77793cbc 100644
+--- a/src/main/java/net/minecraft/server/TileEntityBrewingStand.java
++++ b/src/main/java/net/minecraft/server/TileEntityBrewingStand.java
+@@ -12,6 +12,7 @@ import org.bukkit.event.inventory.BrewEvent;
+ import org.bukkit.event.inventory.BrewingStandFuelEvent;
+ import org.bukkit.inventory.InventoryHolder;
+ // CraftBukkit end
++import io.akarin.api.internal.mixin.IMixinRealTimeTicking; // Akarin
+ 
+ public class TileEntityBrewingStand extends TileEntityContainer implements ITickable, IWorldInventory {
+ 
+@@ -110,14 +111,17 @@ public class TileEntityBrewingStand extends TileEntityContainer implements ITick
+         boolean flag1 = this.brewTime > 0;
+         ItemStack itemstack1 = (ItemStack) this.items.get(3);
+ 
++        // Akarin Start - override craftbukkit changes and implement brewTime realtime using Akarin's API
+         // CraftBukkit start - Use wall time instead of ticks for brewing
+-        int elapsedTicks = MinecraftServer.currentTick - this.lastTick;
+-        this.lastTick = MinecraftServer.currentTick;
++        // int elapsedTicks = MinecraftServer.currentTick - this.lastTick;
++        // this.lastTick = MinecraftServer.currentTick;
+ 
+         if (flag1) {
+-            this.brewTime -= elapsedTicks;
+-            boolean flag2 = this.brewTime <= 0; // == -> <=
++            int ticks = (int) ((IMixinRealTimeTicking) this.getWorld()).getRealTimeTicks();
++            this.brewTime -= ticks;
++            boolean flag2 = this.brewTime <= 0; // CraftBukkit: == -> <=
+             // CraftBukkit end
++            // Akarin End
+ 
+             if (flag2 && flag) {
+                 this.p();
+diff --git a/src/main/java/net/minecraft/server/TileEntityFurnace.java b/src/main/java/net/minecraft/server/TileEntityFurnace.java
+index 7a1428105..228adc04a 100644
+--- a/src/main/java/net/minecraft/server/TileEntityFurnace.java
++++ b/src/main/java/net/minecraft/server/TileEntityFurnace.java
+@@ -10,6 +10,7 @@ import org.bukkit.event.inventory.FurnaceBurnEvent;
+ import org.bukkit.event.inventory.FurnaceSmeltEvent;
+ import org.bukkit.craftbukkit.entity.CraftHumanEntity;
+ // CraftBukkit end
++import io.akarin.api.internal.mixin.IMixinRealTimeTicking; // Akarin
+ 
+ public class TileEntityFurnace extends TileEntityContainer implements ITickable, IWorldInventory {
+ 
+@@ -157,13 +158,15 @@ public class TileEntityFurnace extends TileEntityContainer implements ITickable,
+         boolean flag = (this.getBlock() == Blocks.LIT_FURNACE); // CraftBukkit - SPIGOT-844 - Check if furnace block is lit using the block instead of burn time
+         boolean flag1 = false;
+ 
++        // Akarin - override craftbukkit and implement Akarin's realtime API
+         // CraftBukkit start - Use wall time instead of ticks for cooking
+-        int elapsedTicks = MinecraftServer.currentTick - this.lastTick;
+-        this.lastTick = MinecraftServer.currentTick;
++        // int elapsedTicks = MinecraftServer.currentTick - this.lastTick;
++        // this.lastTick = MinecraftServer.currentTick;
++        int ticks = (int) ((IMixinRealTimeTicking) this.getWorld()).getRealTimeTicks();
+ 
+         // CraftBukkit - moved from below - edited for wall time
+         if (this.isBurning() && this.canBurn()) {
+-            this.cookTime += elapsedTicks;
++            this.cookTime += ticks;
+             if (this.cookTime >= this.cookTimeTotal) {
+                 this.cookTime -= this.cookTimeTotal; // Paper
+                 this.cookTimeTotal = this.a((ItemStack) this.items.get(0));
+@@ -176,7 +179,7 @@ public class TileEntityFurnace extends TileEntityContainer implements ITickable,
+         // CraftBukkit end
+ 
+         if (this.isBurning()) {
+-            this.burnTime -= elapsedTicks; // CraftBukkit - use elapsedTicks in place of constant
++            this.burnTime -= ticks; // CraftBukkit - use elapsedTicks in place of constant
+         }
+ 
+         if (!this.world.isClientSide) {
+@@ -184,7 +187,7 @@ public class TileEntityFurnace extends TileEntityContainer implements ITickable,
+ 
+             if (!this.isBurning() && (itemstack.isEmpty() || ((ItemStack) this.items.get(0)).isEmpty())) {
+                 if (!this.isBurning() && this.cookTime > 0) {
+-                    this.cookTime = MathHelper.clamp(this.cookTime - 2, 0, this.cookTimeTotal);
++                    this.cookTime = MathHelper.clamp(this.cookTime - (2 * ticks), 0, this.cookTimeTotal); // Akarin
+                 }
+             } else {
+                 // CraftBukkit start - Handle multiple elapsed ticks
+-- 
+2.35.1.windows.2
+

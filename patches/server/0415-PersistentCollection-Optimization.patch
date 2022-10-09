@@ -1,0 +1,55 @@
+From d03e5625bb041f89458b93f957127a5fcd4b4197 Mon Sep 17 00:00:00 2001
+From: Yiyu Si <1486864380@qq.com>
+Date: Fri, 26 Aug 2022 22:06:36 +0800
+Subject: [PATCH] PersistentCollection Optimization
+
+
+diff --git a/src/main/java/net/minecraft/server/PersistentCollection.java b/src/main/java/net/minecraft/server/PersistentCollection.java
+index 50056f49a..c74fb4289 100644
+--- a/src/main/java/net/minecraft/server/PersistentCollection.java
++++ b/src/main/java/net/minecraft/server/PersistentCollection.java
+@@ -89,25 +89,27 @@ public class PersistentCollection {
+     }
+ 
+     private void a(PersistentBase persistentbase) {
+-        if (this.b != null) {
++        if (this.b == null) return;
++        
++        File file = this.b.getDataFile(persistentbase.id);
++        if (file == null) return;
++        
++        NBTTagCompound nbttagcompound = new NBTTagCompound();
++        nbttagcompound.set("data", persistentbase.b(new NBTTagCompound()));
++        
++        // Akarin start
++        MCUtil.scheduleAsyncTask(() -> {
+             try {
+-                File file = this.b.getDataFile(persistentbase.id);
+-
+-                if (file != null) {
+-                    NBTTagCompound nbttagcompound = new NBTTagCompound();
+-
+-                    nbttagcompound.set("data", persistentbase.b(new NBTTagCompound()));
+-                    FileOutputStream fileoutputstream = new FileOutputStream(file);
+-
+-                    NBTCompressedStreamTools.a(nbttagcompound, (OutputStream) fileoutputstream);
+-                    fileoutputstream.close();
+-                }
++                FileOutputStream fileoutputstream = new FileOutputStream(file);
++                
++                NBTCompressedStreamTools.a(nbttagcompound, fileoutputstream);
++                fileoutputstream.close();
+             } catch (Exception exception) {
+                 exception.printStackTrace();
+                 ServerInternalException.reportInternalException(exception); // Paper
+             }
+-
+-        }
++        });
++        // Akarin end
+     }
+ 
+     private void b() {
+-- 
+2.35.1.windows.2
+
