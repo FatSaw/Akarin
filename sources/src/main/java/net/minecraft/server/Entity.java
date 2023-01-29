@@ -2093,7 +2093,7 @@ public abstract class Entity implements ICommandListener, KeyedObject { // Paper
     }
 
     protected boolean q(Entity entity) {
-        return this.bF().size() < 1;
+        return this.isPassengersEmpty(); // Reaper
     }
 
     public float aI() {
@@ -2154,7 +2154,7 @@ public abstract class Entity implements ICommandListener, KeyedObject { // Paper
     }
 
     public boolean isVehicle() {
-        return !this.bF().isEmpty();
+        return !this.isPassengersEmpty(); // Reaper
     }
 
     public boolean isSneaking() {
@@ -2879,6 +2879,11 @@ public abstract class Entity implements ICommandListener, KeyedObject { // Paper
     public Entity bE() {
         return null;
     }
+
+    // Reaper start
+    public boolean isPassengersEmpty() { return this.passengers.isEmpty(); }
+    public int getPassengersAmount() { return this.passengers.size(); }
+    // Reaper end
 
     public List<Entity> bF() {
         return (List) (this.passengers.isEmpty() ? Collections.emptyList() : new ObjectArrayList<>(this.passengers)); // Dionysus

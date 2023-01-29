@@ -44,8 +44,8 @@ public class BlockChest extends BlockTileEntity {
             EnumDirection enumdirection = (EnumDirection) iterator.next();
             BlockPosition blockposition1 = blockposition.shift(enumdirection);
             // NeonPaper start - Dont load chunks for chests
-            final IBlockData iblockdata1 = world.isLoaded(blockposition1) ? world.getType(blockposition1) : null;
-            if (iblockdata1 ==  null) {
+            final IBlockData iblockdata1 = world.getTypeIfLoaded(blockposition1);
+            if (iblockdata1 == null) {
                 continue;
             }
             // NeonPaper end

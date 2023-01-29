@@ -293,7 +293,7 @@ public class EntityTracker {
                     arraylist.add(entity);
                 }
 
-                if (!entity.bF().isEmpty()) {
+                if (!entity.isPassengersEmpty()) { // Reaper
                     arraylist1.add(entity);
                 }
             }

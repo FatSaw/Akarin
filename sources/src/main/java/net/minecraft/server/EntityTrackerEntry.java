@@ -14,6 +14,8 @@ import org.bukkit.entity.Player;
 import org.bukkit.event.player.PlayerVelocityEvent;
 // CraftBukkit end
 
+import it.unimi.dsi.fastutil.objects.Object2BooleanOpenHashMap;
+
 public class EntityTrackerEntry {
 
     private static final Logger c = LogManager.getLogger();
@@ -44,7 +46,7 @@ public class EntityTrackerEntry {
     // Paper start
     // Replace trackedPlayers Set with a Map. The value is true until the player receives
     // their first update (which is forced to have absolute coordinates), false afterward.
-    public java.util.Map<EntityPlayer, Boolean> trackedPlayerMap = new java.util.HashMap<EntityPlayer, Boolean>();
+    public java.util.Map<EntityPlayer, Boolean> trackedPlayerMap = new it.unimi.dsi.fastutil.objects.Object2BooleanOpenHashMap<>();
     public Set<EntityPlayer> trackedPlayers = trackedPlayerMap.keySet();
     // Paper end
 
@@ -436,7 +438,7 @@ public class EntityTrackerEntry {
                         }
                     }
 
-                    if (!this.tracker.bF().isEmpty()) {
+                    if (!this.tracker.isPassengersEmpty()) { // Reaper
                         entityplayer.playerConnection.sendPacket(new PacketPlayOutMount(this.tracker));
                     }
 
@@ -499,8 +501,10 @@ public class EntityTrackerEntry {
     }
     private boolean isInRangeOfPlayer(EntityPlayer entityplayer) {
         // Paper end
-        double d0 = entityplayer.locX - (double) this.xLoc / 4096.0D;
-        double d1 = entityplayer.locZ - (double) this.zLoc / 4096.0D;
+        // Reaper start - Fix clientside entity desynchronization
+        double d0 = entityplayer.locX - this.tracker.locX;
+        double d1 = entityplayer.locZ - this.tracker.locZ;
+        // Reaper end
         int i = Math.min(this.e, this.f);
 
         return d0 >= (double) (-i) && d0 <= (double) i && d1 >= (double) (-i) && d1 <= (double) i && this.tracker.a(entityplayer);

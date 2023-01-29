@@ -69,7 +69,7 @@ public class PlayerChunk {
     public void a(final EntityPlayer entityplayer) { // CraftBukkit - added final to argument
         if (this.c.contains(entityplayer)) {
             PlayerChunk.a.debug("Failed to add player. {} already is in chunk {}, {}", entityplayer, Integer.valueOf(this.location.x), Integer.valueOf(this.location.z));
-        } else {
+        } else if (playerChunkMap.getWorld().getWorldBorder().isChunkInBounds(location.x, location.z)) { // Dionysus
             if (this.c.isEmpty()) {
                 this.i = this.playerChunkMap.getWorld().getTime();
             }
@@ -83,7 +83,7 @@ public class PlayerChunk {
                 this.sendChunk(entityplayer);
             }
             // CraftBukkit end
-
+            
         }
     }
 

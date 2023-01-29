@@ -149,7 +149,15 @@ public class PlayerConnection implements PacketListenerPlayIn, ITickable {
     }
     private final static HashSet<Integer> invalidItems = new HashSet<Integer>(java.util.Arrays.asList(8, 9, 10, 11, 26, 34, 36, 43, 51, 55, 59, 62, 63, 64, 68, 71, 74, 75, 83, 90, 92, 93, 94, 104, 105, 115, 117, 118, 119, 125, 127, 132, 140, 141, 142, 144)); // TODO: Check after every update.
     // CraftBukkit end
+    public void resetLastPositionRotation() {
+        lastPosX = Double.MAX_VALUE;
+        lastPosY = Double.MAX_VALUE;
+        lastPosZ = Double.MAX_VALUE;
+        lastPitch = Float.MAX_VALUE;
+        lastYaw = Float.MAX_VALUE;
 
+        PlayerConnection.LOGGER.debug("{} resetLastPositionRotation!", this.player.getName());
+    }
     public void e() {
         this.syncPosition();
         this.player.playerTick();
@@ -927,6 +935,7 @@ public class PlayerConnection implements PacketListenerPlayIn, ITickable {
             double d3 = d0 * d0 + d1 * d1 + d2 * d2;
 
             if (d3 > 36.0D) {
+            if (d3 < 49.0D) // Reaper - Don't send unreachable blocks
                 if (worldserver.isChunkLoaded(blockposition.getX() >> 4, blockposition.getZ() >> 4, true)) // Paper - Fix block break desync - Don't send for unloaded chunks
                     this.sendPacket(new PacketPlayOutBlockChange(worldserver, blockposition)); // Paper - Fix block break desync
                 return;
@@ -954,8 +963,11 @@ public class PlayerConnection implements PacketListenerPlayIn, ITickable {
                         this.player.playerInteractManager.e();
                     }
 
-                    if (worldserver.getType(blockposition).getMaterial() != Material.AIR) {
-                        this.player.playerConnection.sendPacket(new PacketPlayOutBlockChange(worldserver, blockposition));
+                    // Reaper start - Use custom constructor
+                    IBlockData blockData = worldserver.getType(blockposition);
+                    if (blockData.getMaterial() != Material.AIR) {
+                        this.player.playerConnection.sendPacket(new PacketPlayOutBlockChange(blockposition, blockData));
+                        // Reaper end
                     }
                 }
 
@@ -1004,7 +1016,12 @@ public class PlayerConnection implements PacketListenerPlayIn, ITickable {
 
             chatmessage.getChatModifier().setColor(EnumChatFormat.RED);
             this.player.playerConnection.sendPacket(new PacketPlayOutChat(chatmessage, ChatMessageType.GAME_INFO));
-        } else if (this.teleportPos == null && this.player.d((double) blockposition.getX() + 0.5D, (double) blockposition.getY() + 0.5D, (double) blockposition.getZ() + 0.5D) < 64.0D && !this.minecraftServer.a(worldserver, blockposition, this.player) && worldserver.getWorldBorder().a(blockposition)) {
+            // Reaper start - Don't send unreachable blocks
+            return;
+        }
+        boolean isBlockInReach = this.player.d((double) blockposition.getX() + 0.5D, (double) blockposition.getY() + 0.5D, (double) blockposition.getZ() + 0.5D) < 64.0D;
+        if (this.teleportPos == null && isBlockInReach && !this.minecraftServer.a(worldserver, blockposition, this.player) && worldserver.getWorldBorder().a(blockposition)) {
+            // Reaper end - Don't send unreachable blocks
             // CraftBukkit start - Check if we can actually do something over this large a distance
             Location eyeLoc = this.getPlayer().getEyeLocation();
             double reachDistance = NumberConversions.square(eyeLoc.getX() - blockposition.getX()) + NumberConversions.square(eyeLoc.getY() - blockposition.getY()) + NumberConversions.square(eyeLoc.getZ() - blockposition.getZ());
@@ -1014,9 +1031,12 @@ public class PlayerConnection implements PacketListenerPlayIn, ITickable {
             // CraftBukkit end
             this.player.playerInteractManager.a(this.player, worldserver, itemstack, enumhand, blockposition, enumdirection, packetplayinuseitem.d(), packetplayinuseitem.e(), packetplayinuseitem.f());
         }
-
+        // Reaper start - Don't send unreachable blocks
+        if (isBlockInReach) {
         this.player.playerConnection.sendPacket(new PacketPlayOutBlockChange(worldserver, blockposition));
         this.player.playerConnection.sendPacket(new PacketPlayOutBlockChange(worldserver, blockposition.shift(enumdirection)));
+        }
+        // Reaper end - Don't send unreachable blocks
     }
 
     public void a(PacketPlayInBlockPlace packetplayinblockplace) {

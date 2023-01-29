@@ -1535,6 +1535,14 @@ public class EntityPlayer extends EntityHuman implements ICrafting {
         this.setPositionRotation(x, y, z, yaw, pitch);
         this.playerConnection.syncPosition();
     }
+    
+    @Override
+    public void setPositionRotation(double d0, double d1, double d2, float f, float f1) {
+        super.setPositionRotation(d0, d1, d2, f, f1);
+        if (this.playerConnection != null) {
+            this.playerConnection.resetLastPositionRotation();
+        }
+    }
 
     @Override
     protected boolean isFrozen() {

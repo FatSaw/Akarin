@@ -935,7 +935,7 @@ public abstract class World implements IBlockAccess {
                 int l = MathHelper.floor(vec3d.x);
                 int i1 = MathHelper.floor(vec3d.y);
                 int j1 = MathHelper.floor(vec3d.z);
-                BlockPosition blockposition = new BlockPosition(l, i1, j1);
+                BlockPosition.MutableBlockPosition blockposition = new BlockPosition.MutableBlockPosition(l, i1, j1); // Reaper - Optimize BlockPosition
                 IBlockData iblockdata = this.getType(blockposition);
                 Block block = iblockdata.getBlock();
 
@@ -1037,7 +1037,7 @@ public abstract class World implements IBlockAccess {
                     l = MathHelper.floor(vec3d.x) - (enumdirection == EnumDirection.EAST ? 1 : 0);
                     i1 = MathHelper.floor(vec3d.y) - (enumdirection == EnumDirection.UP ? 1 : 0);
                     j1 = MathHelper.floor(vec3d.z) - (enumdirection == EnumDirection.SOUTH ? 1 : 0);
-                    blockposition = new BlockPosition(l, i1, j1);
+                    blockposition.c(l, i1, j1); // Reaper - Optimize BlockPosition
                     IBlockData iblockdata1 = this.getType(blockposition);
                     Block block1 = iblockdata1.getBlock();
 

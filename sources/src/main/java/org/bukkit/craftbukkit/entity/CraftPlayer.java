@@ -523,9 +523,8 @@ public class CraftPlayer extends CraftHumanEntity implements Player {
     public void sendBlockChange(Location loc, int material, byte data) {
         if (getHandle().playerConnection == null) return;
 
-        PacketPlayOutBlockChange packet = new PacketPlayOutBlockChange(((CraftWorld) loc.getWorld()).getHandle(), new BlockPosition(loc.getBlockX(), loc.getBlockY(), loc.getBlockZ()));
+        PacketPlayOutBlockChange packet = new PacketPlayOutBlockChange(new BlockPosition(loc.getBlockX(), loc.getBlockY(), loc.getBlockZ()), CraftMagicNumbers.getBlock(material).fromLegacyData(data)); // Reaper - Use custom constructor
 
-        packet.block = CraftMagicNumbers.getBlock(material).fromLegacyData(data);
         getHandle().playerConnection.sendPacket(packet);
     }
 

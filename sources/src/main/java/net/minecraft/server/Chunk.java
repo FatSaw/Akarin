@@ -472,7 +472,13 @@ public class Chunk {
             try {
                 if (j >= 0 && j >> 4 < this.sections.length) {
                     ChunkSection chunksection = this.sections[j >> 4];
-
+		    /*ChunkSection chunksection;
+                    try {
+                        chunksection = this.sections[j >> 4];
+                    } catch(Exception ex) {
+                        System.out.println(ex.getMessage());
+                        chunksection = this.sections[(j & 15) >> 4];
+                    }*/
                     if (chunksection != Chunk.a) {
                         return chunksection.getType(i & 15, j & 15, k & 15);
                     }
@@ -517,6 +523,14 @@ public class Chunk {
             Block block = iblockdata.getBlock();
             Block block1 = iblockdata1.getBlock();
             ChunkSection chunksection = this.sections[j >> 4];
+            /*ChunkSection chunksection;
+            
+            try {
+                 chunksection = this.sections[j >> 4];
+            } catch(Exception ex) {
+                 System.out.println(ex.getMessage());
+                 chunksection = this.sections[(j & 15) >> 4];
+            }*/
             boolean flag = false;
 
             if (chunksection == Chunk.a) {
@@ -598,7 +612,13 @@ public class Chunk {
         int i = blockposition.getX() & 15;
         int j = blockposition.getY();
         int k = blockposition.getZ() & 15;
-        ChunkSection chunksection = this.sections[j >> 4];
+        ChunkSection chunksection;
+        try {
+            chunksection = this.sections[j >> 4];
+        } catch(Exception ex) {
+            System.out.println(ex.getMessage());
+            chunksection = this.sections[(j & 15) >> 4];
+        }
 
         return chunksection == Chunk.a ? (this.c(blockposition) ? enumskyblock.c : 0) : (enumskyblock == EnumSkyBlock.SKY ? (!this.world.worldProvider.m() ? 0 : chunksection.b(i, j & 15, k)) : (enumskyblock == EnumSkyBlock.BLOCK ? chunksection.c(i, j & 15, k) : enumskyblock.c));
     }
@@ -1223,9 +1243,11 @@ public class Chunk {
             this.o();
         }
 
-        while (!this.y.isEmpty()) {
+        while (true) { // Dionysus - Improve position iterator performance
             BlockPosition blockposition = (BlockPosition) this.y.poll();
-
+            
+            if (blockposition == null) break; // Dionysus - Improve position iterator performance
+            
             if (this.a(blockposition, Chunk.EnumTileEntityState.CHECK) == null && this.getBlockData(blockposition).getBlock().isTileEntity()) {
                 TileEntity tileentity = this.g(blockposition);
 

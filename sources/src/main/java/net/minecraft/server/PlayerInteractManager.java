@@ -109,7 +109,8 @@ public class PlayerInteractManager {
         PlayerInteractEvent event = CraftEventFactory.callPlayerInteractEvent(this.player, Action.LEFT_CLICK_BLOCK, blockposition, enumdirection, this.player.inventory.getItemInHand(), EnumHand.MAIN_HAND);
         if (event.isCancelled()) {
             // Let the client know the block still exists
-            ((EntityPlayer) this.player).playerConnection.sendPacket(new PacketPlayOutBlockChange(this.world, blockposition));
+            IBlockData data = this.world.getType(blockposition);
+            ((EntityPlayer) this.player).playerConnection.sendPacket(new PacketPlayOutBlockChange(blockposition, data)); // Reaper - Use custom constructor
             cancelBreakBlock(blockposition, this.world.getType(blockposition)); // Paper - Avoid visual issues on the client
             // Update any tile entity data for this block
             TileEntity tileentity = this.world.getTileEntity(blockposition);
@@ -160,7 +161,7 @@ public class PlayerInteractManager {
                     ((EntityPlayer) this.player).playerConnection.sendPacket(new PacketPlayOutBlockChange(this.world, blockposition));
                     ((EntityPlayer) this.player).playerConnection.sendPacket(new PacketPlayOutBlockChange(this.world, bottom ? blockposition.up() : blockposition.down()));
                 } else if (block == Blocks.TRAPDOOR) {
-                    ((EntityPlayer) this.player).playerConnection.sendPacket(new PacketPlayOutBlockChange(this.world, blockposition));
+                    ((EntityPlayer) this.player).playerConnection.sendPacket(new PacketPlayOutBlockChange(blockposition, data));
                 }
             } else if (iblockdata.getMaterial() != Material.AIR) {
                 block.attack(this.world, blockposition, this.player);
@@ -502,7 +503,7 @@ public class PlayerInteractManager {
                     ((EntityPlayer) entityhuman).playerConnection.sendPacket(new PacketPlayOutCloseWindow());
                 } else if (blockdata.getBlock() instanceof BlockFlowerPot) {
                     // Send a block change to air and then send back the correct block, just to make the client happy
-                    PacketPlayOutBlockChange packet = new PacketPlayOutBlockChange(this.world, blockposition);
+                    PacketPlayOutBlockChange packet = new PacketPlayOutBlockChange(blockposition, Blocks.AIR.getBlockData()); // Reaper - Use custom constructor
                     packet.block = Blocks.AIR.getBlockData();
                     this.player.playerConnection.sendPacket(packet);
 
